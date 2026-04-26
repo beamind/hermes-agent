@@ -2049,6 +2049,12 @@ def _setup_whatsapp():
         print_info("or personal self-chat) and pair via QR code.")
 
 
+def _setup_voice():
+    """Configure local voice gateway via gateway setup."""
+    from hermes_cli.gateway import _setup_voice as _gateway_setup_voice
+    _gateway_setup_voice()
+
+
 def _setup_weixin():
     """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
     from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
@@ -2234,6 +2240,7 @@ _GATEWAY_PLATFORMS = [
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
+    ("Local Voice (Smart Speaker)", "VOICE_ENABLED", _setup_voice),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 

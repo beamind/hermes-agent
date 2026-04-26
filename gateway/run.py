@@ -2160,6 +2160,11 @@ class GatewayRunner:
                     pass
                 return False
             logger.warning("No messaging platforms enabled.")
+            logger.info(
+                "Tip: Enable the local voice gateway for hands-free interaction. "
+                "Set voice_gateway.enabled=true in ~/.hermes/config.yaml "
+                "and ensure a microphone is connected."
+            )
             logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
@@ -2898,6 +2903,13 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.VOICE:
+            from gateway.platforms.voice import VoiceAdapter, check_voice_requirements
+            if not check_voice_requirements():
+                logger.warning("Voice: sounddevice or sherpa-onnx not installed")
+                return None
+            return VoiceAdapter(config)
+
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2917,6 +2929,10 @@ class GatewayRunner:
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
         if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+            return True
+
+        # Local voice platform: physical access to the device is the authorization.
+        if source.platform == Platform.VOICE:
             return True
 
         user_id = source.user_id
@@ -2940,6 +2956,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.VOICE: "VOICE_ALLOWED_USERS",
         }
         platform_group_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -2962,6 +2979,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.VOICE: "VOICE_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

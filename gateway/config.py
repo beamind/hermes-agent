@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    VOICE = "voice"
 
 
 @dataclass
@@ -321,6 +322,9 @@ class GatewayConfig:
                 config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
             ):
                 connected.append(platform)
+            # Voice uses enabled flag only (local hardware access)
+            elif platform == Platform.VOICE:
+                connected.append(platform)
         
         return connected
     
@@ -555,6 +559,17 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
+
+            # Bridge voice_gateway.enabled → platforms.voice.enabled
+            # so that get_connected_platforms() picks it up.
+            voice_cfg = yaml_cfg.get("voice_gateway")
+            if isinstance(voice_cfg, dict) and voice_cfg.get("enabled"):
+                voice_plat = platforms_data.setdefault("voice", {})
+                if not isinstance(voice_plat, dict):
+                    voice_plat = {}
+                    platforms_data["voice"] = voice_plat
+                voice_plat["enabled"] = True
+
             for plat in Platform:
                 if plat == Platform.LOCAL:
                     continue

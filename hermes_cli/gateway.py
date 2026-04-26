@@ -2325,6 +2325,73 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+def _print_platform_summary() -> None:
+    """Print a friendly summary of configured and available platforms."""
+    try:
+        from gateway.config import load_gateway_config, Platform
+        cfg = load_gateway_config()
+        connected = cfg.get_connected_platforms()
+
+        # Platform → (display name, setup_hint)
+        _PLATFORMS_INFO = {
+            Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
+            Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
+            Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
+            Platform.SIGNAL: ("Signal", "SIGNAL_HTTP_URL"),
+            Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
+            Platform.EMAIL: ("Email", "EMAIL_ADDRESS"),
+            Platform.SMS: ("SMS", "TWILIO_ACCOUNT_SID"),
+            Platform.MATTERMOST: ("Mattermost", "MATTERMOST_TOKEN"),
+            Platform.MATRIX: ("Matrix", "MATRIX_ACCESS_TOKEN"),
+            Platform.DINGTALK: ("DingTalk", "DINGTALK_CLIENT_ID"),
+            Platform.FEISHU: ("Feishu", "FEISHU_APP_ID"),
+            Platform.WECOM: ("WeCom", "WECOM_BOT_ID"),
+            Platform.WEIXIN: ("Weixin", "WEIXIN_ACCOUNT_ID"),
+            Platform.BLUEBUBBLES: ("BlueBubbles", "BLUEBUBBLES_SERVER_URL"),
+            Platform.QQBOT: ("QQ", "QQ_APP_ID"),
+            Platform.VOICE: ("Local Voice", "voice_gateway.enabled in config.yaml"),
+            Platform.HOMEASSISTANT: ("Home Assistant", "HASS_TOKEN"),
+        }
+
+        all_check = [
+            Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK,
+            Platform.WHATSAPP, Platform.SIGNAL, Platform.EMAIL,
+            Platform.SMS, Platform.MATTERMOST, Platform.MATRIX,
+            Platform.DINGTALK, Platform.FEISHU, Platform.WECOM,
+            Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT,
+            Platform.VOICE, Platform.HOMEASSISTANT,
+        ]
+
+        enabled = []
+        disabled = []
+        for p in all_check:
+            name, _hint = _PLATFORMS_INFO.get(p, (p.value, ""))
+            if p in connected:
+                enabled.append(name)
+            else:
+                disabled.append(name)
+
+        if enabled:
+            print(f"  Configured:   {', '.join(enabled)}")
+        else:
+            print(f"  {color('No platforms configured.', Colors.YELLOW)}")
+
+        # Show ALL available platforms (don't truncate — Voice was hidden before)
+        if disabled:
+            print(f"  Available:    {', '.join(disabled)}")
+
+        # Actionable hint
+        if not enabled:
+            print(f"  {color('Setup:', Colors.CYAN)}        hermes setup gateway")
+        elif Platform.VOICE not in connected:
+            # Voice is a special local-only platform — give it a direct hint
+            print(f"  {color('Enable voice:', Colors.CYAN)} hermes config set voice_gateway.enabled true")
+
+    except Exception:
+        # Non-fatal: don't block gateway startup if summary fails
+        pass
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
@@ -2345,6 +2412,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("│  Messaging platforms + cron scheduler                    │")
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
+    print()
+
+    _print_platform_summary()
     print()
     
     # Exit with code 1 if gateway fails to connect any platform,
@@ -2724,6 +2794,26 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "voice",
+        "label": "Local Voice",
+        "emoji": "🎙️",
+        "token_var": "VOICE_ENABLED",
+        "setup_instructions": [
+            "1. Ensure a microphone and speaker are connected",
+            "2. Install system dependencies: alsa-utils, mpv, libmpv",
+            "3. Install Python dependencies: sherpa-onnx, sounddevice, dashscope",
+            "4. Download wake-word model to ~/.hermes/models/",
+            "5. Set DASHSCOPE_API_KEY in ~/.hermes/.env",
+            "6. Edit ~/.hermes/config.yaml to add voice: section",
+        ],
+        "vars": [
+            {"name": "VOICE_ENABLED", "prompt": "Enable local voice gateway (true/false)", "password": False,
+             "help": "Set to 'true' to enable wake-word listening and voice interaction."},
+            {"name": "DASHSCOPE_API_KEY", "prompt": "DashScope API key (for ASR/TTS)", "password": True,
+             "help": "Required for real-time speech recognition. Get one at https://dashscope.aliyun.com/"},
+        ],
+    },
 ]
 
 
@@ -2774,6 +2864,13 @@ def _platform_status(platform: dict) -> str:
             return "configured"
         if val or token:
             return "partially configured"
+        return "not configured"
+    if platform.get("key") == "voice":
+        if val and val.lower() == "true":
+            dashscope_key = get_env_value("DASHSCOPE_API_KEY")
+            if dashscope_key:
+                return "configured"
+            return "enabled, missing API key"
         return "not configured"
     if val:
         return "configured"
@@ -2989,6 +3086,112 @@ def _setup_dingtalk():
         # Also enable allow-all by default for convenience
         if get_env_value("DINGTALK_CLIENT_ID"):
             save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
+
+
+def _setup_voice():
+    """Interactive setup for local voice gateway.
+
+    Guides the user through enabling voice and setting the DashScope API key
+    in one flow — no need to remember nested config paths.
+    """
+    from hermes_cli.setup import print_info, print_success, print_warning, prompt_yes_no
+
+    print()
+    print(color("  ─── 🎙️ Local Voice Setup ───", Colors.CYAN))
+
+    # Check if already enabled (looks at config.yaml, not just env)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        already_enabled = bool(cfg.get("voice_gateway", {}).get("enabled"))
+    except Exception:
+        already_enabled = False
+
+    if already_enabled:
+        print_success("Local voice is already enabled.")
+        if not prompt_yes_no("  Reconfigure voice settings?", False):
+            return
+
+    print()
+    print_info("The voice gateway requires:")
+    print("  • A microphone and speaker connected to this machine")
+    print("  • alsa-utils (arecord/aplay) installed")
+    print("  • Python packages: uv pip install sherpa-onnx sounddevice dashscope")
+    print("  • Wake-word model files in ~/.hermes/models/")
+    print("  • DashScope API key for real-time ASR")
+    print()
+
+    enabled = prompt_yes_no("Enable local voice gateway?", False)
+
+    # Save to config.yaml (not .env — voice_gateway is a config section)
+    try:
+        from hermes_cli.config import set_config_value
+        set_config_value("voice_gateway.enabled", "true" if enabled else "false")
+    except Exception as e:
+        print_warning(f"  Could not save config: {e}")
+        return
+
+    if not enabled:
+        print_info("Local voice disabled.")
+        return
+
+    # ── API Key ──
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        existing_key = cfg.get("voice_gateway", {}).get("asr", {}).get("dashscope", {}).get("api_key", "")
+    except Exception:
+        existing_key = ""
+
+    if existing_key:
+        masked = f"{existing_key[:4]}...{existing_key[-4:]}"
+        print_success(f"  DashScope API key already set ({masked}).")
+        if prompt_yes_no("  Update API key?", False):
+            existing_key = ""
+
+    if not existing_key:
+        print()
+        print_info("Get a DashScope API key: https://dashscope.aliyun.com/")
+        try:
+            new_key = input("  DashScope API key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup cancelled.")
+            return
+
+        if new_key:
+            # Save nested key directly to config.yaml
+            # (set_config_value would redirect api_key to .env, so we handle it manually)
+            config_path = Path.home() / ".hermes" / "config.yaml"
+            user_config = {}
+            if config_path.exists():
+                try:
+                    import yaml
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                except Exception:
+                    pass
+
+            vg = user_config.setdefault("voice_gateway", {})
+            asr = vg.setdefault("asr", {})
+            ds = asr.setdefault("dashscope", {})
+            ds["api_key"] = new_key
+
+            try:
+                from utils import atomic_yaml_write
+                atomic_yaml_write(config_path, user_config)
+                print_success("  API key saved to ~/.hermes/config.yaml")
+            except Exception as e:
+                print_warning(f"  Could not save API key: {e}")
+        else:
+            print_warning("  No API key provided. Voice ASR will not work.")
+
+    # ── Summary ──
+    print()
+    print_success("🎙️ Local voice configured!")
+    print_info("Next steps:")
+    print("  1. Install deps:    uv pip install sherpa-onnx sounddevice dashscope")
+    print("  2. Download model:  wget -P ~/.hermes/models/ ...")
+    print("  3. Start gateway:   hermes gateway")
 
 
 def _setup_wecom():
@@ -3768,8 +3971,8 @@ def gateway_setup():
     any_configured = any(
         bool(get_env_value(p["token_var"]))
         for p in _PLATFORMS
-        if p["key"] != "whatsapp"
-    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+        if p["key"] not in ("whatsapp", "voice")
+    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true" or (get_env_value("VOICE_ENABLED") or "").lower() == "true"
 
     if any_configured:
         print()

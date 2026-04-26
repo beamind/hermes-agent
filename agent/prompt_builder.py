@@ -289,6 +289,13 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
+    "voice": (
+        "You are a local voice assistant. The user is speaking to you through a microphone. "
+        "Keep responses concise and natural-sounding when read aloud. "
+        "Avoid markdown, tables, code blocks, and long lists — they don't work well in speech. "
+        "You can control local music playback and answer questions. "
+        "If the user wants to continue listening to music after you speak, they will say so explicitly."
+    ),
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
         "Please do not use markdown as it does not render. "

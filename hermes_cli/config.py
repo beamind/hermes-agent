@@ -716,6 +716,38 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
+
+    # Voice Gateway — local smart-speaker mode with wake-word, ASR, and TTS.
+    # Kept under ``voice_gateway`` to avoid collision with CLI ``voice`` above.
+    "voice_gateway": {
+        "enabled": False,
+        "wake_word": {
+            "keyword": "小爱同学",
+            "model_dir": "~/.hermes/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+            "keywords_threshold": 0.1,
+            "keywords_score": 2.5,
+            "provider": "cpu",
+            "num_threads": 2,
+            "mic_gain": 1.0,
+        },
+        "audio": {
+            "mic_device": "hw:1,0",
+            "speaker_device": "",
+            "default_volume": 70,
+        },
+        "asr": {
+            "provider": "dashscope",
+            "dashscope": {
+                "model": "qwen3-asr-flash-realtime",
+                "sample_rate": 16000,
+                "language_hints": ["zh", "en"],
+            },
+        },
+        "session": {
+            "continuation_timeout": 30,
+            "max_continuation_rounds": 3,
+        },
+    },
     
     "human_delay": {
         "mode": "off",
@@ -3844,6 +3876,16 @@ def show_config():
     
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+
+    # Voice gateway — reads from config.yaml (not .env)
+    voice_cfg = load_config().get("voice_gateway", {})
+    voice_enabled = bool(voice_cfg.get("enabled"))
+    voice_status = "enabled" if voice_enabled else color("not configured", Colors.DIM)
+    print(f"  Local Voice:  {voice_status}")
+    if voice_enabled:
+        ww = voice_cfg.get("wake_word", {})
+        keyword = ww.get("keyword", "小爱同学")
+        print(f"                wake word: {keyword}")
     
     # Skill config
     try:
