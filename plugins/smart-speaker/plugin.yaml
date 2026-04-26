@@ -1,12 +1,14 @@
 name: smart-speaker
 version: 0.1.0
 description: |
-  Smart speaker plugin for Hermes — local music playback and playback control.
-  Future: voice interaction, speaker recognition, Netease Cloud Music integration.
+  Smart speaker plugin for Hermes — local music playback, Netease Cloud Music fallback,
+  and playback control.
+  Future: voice interaction, speaker recognition.
 author: beamind
 kind: backend
 pip_dependencies:
   - python-mpv>=1.0
+  - pyncm>=1.8
 external_dependencies:
   - name: libmpv
     install: "sudo apt-get install -y libmpv-dev mpv   # Debian/Ubuntu"

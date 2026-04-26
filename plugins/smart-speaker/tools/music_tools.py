@@ -76,7 +76,7 @@ def _status_to_dict(status: PlaybackStatus) -> dict:
 # ---------------------------------------------------------------------------
 
 def _handle_play_music(args: dict, **kw) -> str:
-    """Play music by query from local library."""
+    """Play music by query from local library or Netease Cloud Music."""
     library_path = _get_library_path()
     if not library_path:
         return tool_error(
@@ -87,38 +87,99 @@ def _handle_play_music(args: dict, **kw) -> str:
     query = str(args.get("query") or "").strip()
     source = str(args.get("source") or "auto").strip().lower()
 
-    if source not in {"local", "auto"}:
-        return tool_error("source must be one of: local, auto")
+    if source not in {"local", "auto", "netease"}:
+        return tool_error("source must be one of: local, auto, netease")
 
-    # Local search
-    matches = MusicPlayer.search_library(library_path, query)
-    if matches:
-        player = _get_player()
-        # Build playlist from matches
-        songs = []
-        for fp in matches:
-            p = Path(fp)
-            songs.append({
-                "file_path": fp,
-                "title": p.stem,
-                "artist": "",
-            })
-        player.load_playlist(songs)
-        success = player.play_index(0)
-        if success:
-            status = player.get_status()
-            return tool_result({
-                "success": True,
-                "action": "play",
-                "source": "local",
-                "query": query,
-                "matches_found": len(matches),
-                "now_playing": _status_to_dict(status),
-            })
-        return tool_error("Failed to start playback")
+    # ---- local search ----
+    if source in {"local", "auto"}:
+        matches = MusicPlayer.search_library(library_path, query)
+        if matches:
+            player = _get_player()
+            songs = []
+            for fp in matches:
+                p = Path(fp)
+                songs.append({
+                    "file_path": fp,
+                    "title": p.stem,
+                    "artist": "",
+                })
+            player.load_playlist(songs)
+            success = player.play_index(0)
+            if success:
+                status = player.get_status()
+                return tool_result({
+                    "success": True,
+                    "action": "play",
+                    "source": "local",
+                    "query": query,
+                    "matches_found": len(matches),
+                    "now_playing": _status_to_dict(status),
+                })
+            return tool_error("Failed to start playback")
 
-    # Future: Netease fallback goes here (Phase 0.5)
-    return tool_error(f"No local matches for '{query}'")
+        if source == "local":
+            return tool_error(f"No local matches for '{query}'")
+
+    # ---- netease fallback ----
+    from .netease_music import NeteaseMusic
+
+    netease = NeteaseMusic()
+    results = netease.search(query, limit=5)
+    if not results:
+        return tool_error(
+            f"No matches found for '{query}' on Netease Cloud Music"
+        )
+
+    player = _get_player()
+    songs = []
+    for item in results:
+        url = netease.get_play_url(item["id"])
+        if not url:
+            continue
+
+        # Cache to local library
+        safe_name = NeteaseMusic._sanitize_filename(
+            f"{item['artist']} - {item['name']}"
+        ) + ".mp3"
+        cache_path = Path(library_path) / safe_name
+
+        file_path: str = url
+        if cache_path.exists():
+            logger.info("Local cache hit: %s", cache_path)
+            file_path = str(cache_path)
+        elif netease.download_song(url, cache_path):
+            file_path = str(cache_path)
+        else:
+            logger.warning(
+                "Failed to download %s, fallback to streaming", item["name"]
+            )
+
+        songs.append({
+            "file_path": file_path,
+            "title": item["name"],
+            "artist": item["artist"],
+        })
+
+    if not songs:
+        return tool_error(
+            f"Found songs on Netease but no playable URLs for '{query}' "
+            "(may require login or be VIP-only)"
+        )
+
+    player.load_playlist(songs)
+    success = player.play_index(0)
+    if success:
+        status = player.get_status()
+        return tool_result({
+            "success": True,
+            "action": "play",
+            "source": "netease",
+            "query": query,
+            "matches_found": len(results),
+            "playable": len(songs),
+            "now_playing": _status_to_dict(status),
+        })
+    return tool_error("Failed to start playback from Netease")
 
 
 def _handle_control_playback(args: dict, **kw) -> str:
@@ -207,8 +268,10 @@ def _handle_get_playback_status(args: dict, **kw) -> str:
 PLAY_MUSIC_SCHEMA = {
     "name": "play_music",
     "description": (
-        "Play music from the local library. Searches by filename matching. "
-        "If query is empty, plays a random shuffle of the entire library. "
+        "Play music from local library or Netease Cloud Music. "
+        "Searches local files by filename matching first (when source=auto). "
+        "If no local match, falls back to Netease search, downloads to library, and plays. "
+        "If query is empty, plays a random shuffle of the entire local library. "
         "Returns the currently playing track info."
     ),
     "parameters": {
@@ -220,8 +283,8 @@ PLAY_MUSIC_SCHEMA = {
             },
             "source": {
                 "type": "string",
-                "enum": ["local", "auto"],
-                "description": "Where to search. 'local' = local files only. 'auto' = local first, then cloud fallback.",
+                "enum": ["local", "auto", "netease"],
+                "description": "Where to search. 'local' = local files only. 'auto' = local first, then Netease fallback. 'netease' = Netease Cloud Music only.",
                 "default": "auto",
             },
         },

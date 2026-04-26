@@ -138,6 +138,15 @@ class MusicPlayer:
             while 0 <= index < len(self._playlist):
                 song = self._playlist[index]
                 path = song.get("file_path", "")
+
+                # Support HTTP URLs (Netease streaming)
+                if path and (path.startswith("http://") or path.startswith("https://")):
+                    self._playlist_index = index
+                    logger.debug("MusicPlayer playing URL: %s", path)
+                    self._player.play(path)
+                    self._player.pause = False
+                    return True
+
                 if path and Path(path).exists():
                     self._playlist_index = index
                     logger.debug("MusicPlayer playing: %s", path)
