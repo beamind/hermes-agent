@@ -95,13 +95,10 @@ class VoiceAdapter(BasePlatformAdapter):
                 logger.error("DashScope ASR requirements not met")
                 return False
 
-            api_key = self._voice_cfg.get("asr", {}).get("dashscope", {}).get("api_key")
-            if not api_key:
-                # Fallback: read from dashscope global config or env
-                api_key = os.getenv("DASHSCOPE_API_KEY", "")
+            api_key = os.getenv("ASR_DASHSCOPE_API_KEY", "").strip()
             if not api_key:
                 logger.error(
-                    "DashScope API key not configured. "
+                    "ASR_DASHSCOPE_API_KEY not configured. "
                     "Run: hermes setup gateway  → select 'Local Voice' to configure."
                 )
                 return False

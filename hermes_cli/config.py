@@ -658,10 +658,11 @@ DEFAULT_CONFIG = {
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, DashScope 5000,
+    # ElevenLabs 5k-40k model-aware, Gemini 5000, Edge 5000, Mistral 4000,
+    # NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "dashscope",  # "dashscope" | "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local) | "kittentts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -684,6 +685,14 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "dashscope": {
+            "model": "cosyvoice-v3-flash",
+            # cosyvoice-v3-flash, cosyvoice-v3-plus, cosyvoice-v2, cosyvoice-v1
+            "voice": "longyuan_v3",
+            # longyuan_v3, longwan_v3, longqiang_v3, longanya_v3, longxiaochun_v3,
+            # longanwen_v3, longyue_v3, longwanjun_v3, longyingmu_v3
+            "speed": 1.0,
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
@@ -1268,6 +1277,20 @@ OPTIONAL_ENV_VARS = {
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
+    },
+    "ASR_DASHSCOPE_API_KEY": {
+        "description": "DashScope API key for real-time speech recognition (ASR). ",
+        "prompt": "DashScope API Key (for ASR)",
+        "url": "https://modelstudio.console.alibabacloud.com/",
+        "password": True,
+        "category": "tool",
+    },
+    "TTS_DASHSCOPE_API_KEY": {
+        "description": "DashScope API key for text-to-speech (TTS). ",
+        "prompt": "DashScope API Key (for TTS)",
+        "url": "https://modelstudio.console.alibabacloud.com/",
+        "password": True,
+        "category": "tool",
     },
     "DASHSCOPE_BASE_URL": {
         "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
@@ -3430,7 +3453,10 @@ def _sanitize_env_lines(lines: list) -> list:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                split_positions.append(idx)
+                # Only match whole key names — avoid matching a suffix inside a
+                # longer key (e.g. DASHSCOPE_API_KEY= inside ASR_DASHSCOPE_API_KEY=).
+                if idx == 0 or not (stripped[idx - 1].isalnum() or stripped[idx - 1] == '_'):
+                    split_positions.append(idx)
                 idx = stripped.find(needle, idx + len(needle))
 
         if len(split_positions) > 1:

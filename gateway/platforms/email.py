@@ -274,9 +274,24 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            # 163 and some Chinese providers require an ID command before login.
+            # Python's imaplib does not have a built-in ID command, so we send it
+            # manually via the internal command interface.
+            try:
+                tag = imap._new_tag()
+                tag_bytes = tag if isinstance(tag, bytes) else tag.encode()
+                imap.send(tag_bytes + b' ID ("name" "Hermes-Agent" "version" "1.0")\r\n')
+                while True:
+                    line = imap.readline()
+                    if line.startswith(tag_bytes):
+                        break
+            except Exception:
+                pass
             imap.login(self._address, self._password)
             # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
+            status, _ = imap.select("INBOX")
+            if status != "OK":
+                raise RuntimeError(f"Failed to select INBOX: {status}")
             status, data = imap.uid("search", None, "ALL")
             if status == "OK" and data and data[0]:
                 for uid in data[0].split():
@@ -290,11 +305,22 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
-            smtp.quit()
+            # Test SMTP connection.
+            # Some providers (e.g. 163) require direct SSL on port 465 and close
+            # the connection if STARTTLS is attempted on port 587.
+            try:
+                smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.login(self._address, self._password)
+                smtp.quit()
+            except Exception as starttls_err:
+                # Fallback to SMTP_SSL (port 465) when STARTTLS fails
+                if "Connection unexpectedly closed" in str(starttls_err) or self._smtp_port == 465:
+                    smtp = smtplib.SMTP_SSL(self._smtp_host, 465, context=ssl.create_default_context(), timeout=30)
+                    smtp.login(self._address, self._password)
+                    smtp.quit()
+                else:
+                    raise
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
@@ -342,8 +368,21 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
+                # 163 and some Chinese providers require an ID command before login.
+                try:
+                    tag = imap._new_tag()
+                    tag_bytes = tag if isinstance(tag, bytes) else tag.encode()
+                    imap.send(tag_bytes + b' ID ("name" "Hermes-Agent" "version" "1.0")\r\n')
+                    while True:
+                        line = imap.readline()
+                        if line.startswith(tag_bytes):
+                            break
+                except Exception:
+                    pass
                 imap.login(self._address, self._password)
-                imap.select("INBOX")
+                status, _ = imap.select("INBOX")
+                if status != "OK":
+                    raise RuntimeError(f"Failed to select INBOX: {status}")
 
                 status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:

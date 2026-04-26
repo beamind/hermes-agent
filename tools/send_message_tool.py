@@ -1065,9 +1065,18 @@ async def _send_email(extra, chat_id, message):
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
+        # Some providers (e.g. 163) require direct SSL on port 465 and close
+        # the connection if STARTTLS is attempted on port 587.
+        try:
+            server = smtplib.SMTP(smtp_host, smtp_port)
+            server.starttls(context=ssl.create_default_context())
+            server.login(address, password)
+        except Exception as starttls_err:
+            if "Connection unexpectedly closed" in str(starttls_err) or smtp_port == 465:
+                server = smtplib.SMTP_SSL(smtp_host, 465, context=ssl.create_default_context())
+                server.login(address, password)
+            else:
+                raise
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

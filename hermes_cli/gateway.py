@@ -2804,13 +2804,13 @@ _PLATFORMS = [
             "2. Install system dependencies: alsa-utils, mpv, libmpv",
             "3. Install Python dependencies: sherpa-onnx, sounddevice, dashscope",
             "4. Download wake-word model to ~/.hermes/models/",
-            "5. Set DASHSCOPE_API_KEY in ~/.hermes/.env",
+            "5. Set ASR_DASHSCOPE_API_KEY in ~/.hermes/.env",
             "6. Edit ~/.hermes/config.yaml to add voice: section",
         ],
         "vars": [
             {"name": "VOICE_ENABLED", "prompt": "Enable local voice gateway (true/false)", "password": False,
              "help": "Set to 'true' to enable wake-word listening and voice interaction."},
-            {"name": "DASHSCOPE_API_KEY", "prompt": "DashScope API key (for ASR/TTS)", "password": True,
+            {"name": "ASR_DASHSCOPE_API_KEY", "prompt": "DashScope API key (for ASR)", "password": True,
              "help": "Required for real-time speech recognition. Get one at https://dashscope.aliyun.com/"},
         ],
     },
@@ -2867,7 +2867,7 @@ def _platform_status(platform: dict) -> str:
         return "not configured"
     if platform.get("key") == "voice":
         if val and val.lower() == "true":
-            dashscope_key = get_env_value("DASHSCOPE_API_KEY")
+            dashscope_key = get_env_value("ASR_DASHSCOPE_API_KEY")
             if dashscope_key:
                 return "configured"
             return "enabled, missing API key"
@@ -3136,12 +3136,8 @@ def _setup_voice():
         return
 
     # ── API Key ──
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        existing_key = cfg.get("voice_gateway", {}).get("asr", {}).get("dashscope", {}).get("api_key", "")
-    except Exception:
-        existing_key = ""
+    from hermes_cli.config import get_env_value, save_env_value
+    existing_key = get_env_value("ASR_DASHSCOPE_API_KEY") or ""
 
     if existing_key:
         masked = f"{existing_key[:4]}...{existing_key[-4:]}"
@@ -3159,29 +3155,8 @@ def _setup_voice():
             return
 
         if new_key:
-            # Save nested key directly to config.yaml
-            # (set_config_value would redirect api_key to .env, so we handle it manually)
-            config_path = Path.home() / ".hermes" / "config.yaml"
-            user_config = {}
-            if config_path.exists():
-                try:
-                    import yaml
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                except Exception:
-                    pass
-
-            vg = user_config.setdefault("voice_gateway", {})
-            asr = vg.setdefault("asr", {})
-            ds = asr.setdefault("dashscope", {})
-            ds["api_key"] = new_key
-
-            try:
-                from utils import atomic_yaml_write
-                atomic_yaml_write(config_path, user_config)
-                print_success("  API key saved to ~/.hermes/config.yaml")
-            except Exception as e:
-                print_warning(f"  Could not save API key: {e}")
+            save_env_value("ASR_DASHSCOPE_API_KEY", new_key)
+            print_success("  API key saved to ~/.hermes/.env")
         else:
             print_warning("  No API key provided. Voice ASR will not work.")
 

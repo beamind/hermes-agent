@@ -2,14 +2,16 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- DashScope (Alibaba Cloud CosyVoice): Natural Chinese/English voices, needs DASHSCOPE_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- KittenTTS (local, free, no API key): Lightweight ONNX TTS, needs kittentts installed
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -85,10 +87,17 @@ def _import_kittentts():
     return KittenTTS
 
 
+def _import_dashscope():
+    """Lazy import dashscope tts_v2 components. Returns the module or raises ImportError."""
+    import dashscope
+    from dashscope.audio.tts_v2 import AudioFormat, ResultCallback, SpeechSynthesizer
+    return dashscope, AudioFormat, ResultCallback, SpeechSynthesizer
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
-DEFAULT_PROVIDER = "edge"
+DEFAULT_PROVIDER = "dashscope"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
@@ -116,6 +125,11 @@ GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
 
+DEFAULT_DASHSCOPE_MODEL = "cosyvoice-v3-flash"
+DEFAULT_DASHSCOPE_VOICE = "longyuan_v3"
+DEFAULT_DASHSCOPE_SPEED = 1.0
+_DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
@@ -136,6 +150,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "dashscope": 5000,    # DashScope CosyVoice practical limit
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -764,6 +779,131 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: DashScope (Alibaba Cloud CosyVoice)
+# ===========================================================================
+def _generate_dashscope_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Alibaba Cloud DashScope CosyVoice TTS.
+
+    DashScope tts_v2 WebSocket API supports MP3 natively, so we avoid
+    unnecessary conversions:
+      - .mp3 target  -> MP3_24000HZ_MONO_256KBPS direct (0 ffmpeg passes)
+      - .wav target  -> PCM + WAV header (0 ffmpeg passes)
+      - .ogg target  -> PCM -> temp WAV -> ffmpeg Opus (1 ffmpeg pass)
+    """
+    api_key = os.getenv("TTS_DASHSCOPE_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "TTS_DASHSCOPE_API_KEY not configured. Run 'hermes setup tts' and select 'DashScope', "
+            "or set the TTS_DASHSCOPE_API_KEY environment variable in ~/.hermes/.env. "
+            "Get one at https://modelstudio.console.alibabacloud.com/"
+        )
+
+    dashscope, AudioFormat, ResultCallback, SpeechSynthesizer = _import_dashscope()
+
+    ds_config = tts_config.get("dashscope", {})
+    model = str(ds_config.get("model", DEFAULT_DASHSCOPE_MODEL)).strip() or DEFAULT_DASHSCOPE_MODEL
+    voice = str(ds_config.get("voice", DEFAULT_DASHSCOPE_VOICE)).strip() or DEFAULT_DASHSCOPE_VOICE
+    speed = float(ds_config.get("speed", tts_config.get("speed", DEFAULT_DASHSCOPE_SPEED)))
+
+    dashscope.api_key = api_key
+
+    output_lower = output_path.lower()
+    if output_lower.endswith(".mp3"):
+        audio_format = AudioFormat.MP3_24000HZ_MONO_256KBPS
+    else:
+        # .wav or .ogg (or anything else) — use PCM and wrap/convert downstream
+        audio_format = AudioFormat.PCM_24000HZ_MONO_16BIT
+
+    class _DashScopeTTSCallback(ResultCallback):
+        def __init__(self) -> None:
+            self.audio_chunks: list[bytes] = []
+            self.done = threading.Event()
+            self.error: Optional[Exception] = None
+
+        def on_data(self, data: bytes) -> None:
+            self.audio_chunks.append(data)
+
+        def on_complete(self) -> None:
+            self.done.set()
+
+        def on_error(self, message) -> None:
+            self.error = RuntimeError(f"DashScope TTS error: {message}")
+            self.done.set()
+
+        def on_close(self) -> None:
+            self.done.set()
+
+        def get_audio(self) -> bytes:
+            return b"".join(self.audio_chunks)
+
+    callback = _DashScopeTTSCallback()
+    synth = SpeechSynthesizer(
+        model=model,
+        voice=voice,
+        format=audio_format,
+        speech_rate=speed,
+        url=_DASHSCOPE_WS_URL,
+        callback=callback,
+    )
+    try:
+        synth.call(text)
+        callback.done.wait(timeout=30)
+        if callback.error:
+            raise callback.error
+        audio_bytes = callback.get_audio()
+        if not audio_bytes:
+            raise RuntimeError("DashScope TTS returned no audio data")
+    finally:
+        synth.close()
+
+    # Fast path: MP3 direct write
+    if output_lower.endswith(".mp3"):
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
+        return output_path
+
+    # PCM path: wrap with WAV header
+    wav_bytes = _wrap_pcm_as_wav(audio_bytes)
+    if output_lower.endswith(".wav"):
+        with open(output_path, "wb") as f:
+            f.write(wav_bytes)
+        return output_path
+
+    # .ogg path: ffmpeg WAV -> Opus
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_bytes)
+        wav_path = tmp.name
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            cmd = [
+                ffmpeg, "-i", wav_path,
+                "-acodec", "libopus", "-ac", "1",
+                "-b:a", "64k", "-vbr", "off",
+                "-y", "-loglevel", "error",
+                output_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
+        else:
+            logger.warning(
+                "ffmpeg not found; writing raw WAV to %s (extension may be misleading)",
+                output_path,
+            )
+            shutil.copyfile(wav_path, output_path)
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -967,8 +1107,9 @@ def text_to_speech_tool(
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        # or providers where we convert to Opus internally (no double conversion).
+        # Otherwise fall back to .mp3.
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini", "dashscope"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1024,6 +1165,18 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "dashscope":
+            try:
+                _import_dashscope()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "DashScope provider selected but 'dashscope' package not installed. "
+                             "Run: pip install dashscope"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with DashScope CosyVoice TTS...")
+            _generate_dashscope_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -1092,7 +1245,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini", "dashscope"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -1170,6 +1323,12 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if os.getenv("TTS_DASHSCOPE_API_KEY"):
+        try:
+            _import_dashscope()
+            return True
+        except ImportError:
+            pass
     if _check_neutts_available():
         return True
     if _check_kittentts_available():
@@ -1471,6 +1630,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  DashScope:  {'installed + key set' if _check(_import_dashscope, 'ds') and os.getenv('TTS_DASHSCOPE_API_KEY') else 'not ready (needs pip install dashscope + TTS_DASHSCOPE_API_KEY)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 
@@ -1492,7 +1652,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, DashScope 5000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
             },
             "output_path": {
                 "type": "string",
