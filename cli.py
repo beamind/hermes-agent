@@ -387,7 +387,7 @@ def load_cli_config() -> Dict[str, Any]:
             "streaming": True,
             "busy_input_mode": "interrupt",
 
-            "skin": "default",
+            "skin": "daylight",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
