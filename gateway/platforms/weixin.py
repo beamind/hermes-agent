@@ -1300,21 +1300,35 @@ class WeixinAdapter(BasePlatformAdapter):
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
         if not sender_id:
+            logger.debug("[%s] dropped message with empty sender", self.name)
             return
         if sender_id == self._account_id:
+            logger.debug("[%s] dropped self-message from=%s", self.name, _safe_id(sender_id))
             return
 
         message_id = str(message.get("message_id") or "").strip()
         if message_id and self._dedup.is_duplicate(message_id):
+            logger.debug("[%s] dropped duplicate message_id=%s", self.name, message_id)
             return
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if self._group_policy == "disabled":
+                logger.info("[%s] dropped group message from=%s — group_policy=disabled", self.name, _safe_id(sender_id))
                 return
-            if self._group_policy == "allowlist" and effective_chat_id not in self._group_allow_from:
-                return
+            if self._group_policy == "allowlist":
+                bare_chat = effective_chat_id.split("@")[0]
+                if effective_chat_id not in self._group_allow_from and bare_chat not in self._group_allow_from:
+                    logger.info(
+                        "[%s] dropped group message from=%s chat=%s — not in group_allow_from (allowed=%s)",
+                        self.name, _safe_id(sender_id), _safe_id(effective_chat_id), self._group_allow_from,
+                    )
+                    return
         elif not self._is_dm_allowed(sender_id):
+            logger.info(
+                "[%s] dropped DM from=%s — not in allowed list (policy=%s, allowed=%s)",
+                self.name, _safe_id(sender_id), self._dm_policy, self._allow_from,
+            )
             return
 
         context_token = str(message.get("context_token") or "").strip()
@@ -1360,7 +1374,10 @@ class WeixinAdapter(BasePlatformAdapter):
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            # iLink returns user IDs with domain suffixes (e.g. "xxx@im.wechat").
+            # Allow matching against bare IDs configured by the user.
+            bare_sender = sender_id.split("@")[0]
+            return sender_id in self._allow_from or bare_sender in self._allow_from
         return True
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:

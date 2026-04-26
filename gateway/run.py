@@ -4808,8 +4808,17 @@ class GatewayRunner:
             )
 
             # Auto voice reply: send TTS audio before the text response
+            _presentation = agent_result.get("presentation", {})
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+
+            # If the agent declared this turn should not produce voice feedback
+            # (e.g. an action tool like play_music already provides sensory
+            # feedback), forward that intent to the adapter via event flags so
+            # base-adapter auto-TTS is also suppressed.
+            if _presentation.get("voice_reply") is False:
+                event.flags.add("suppress_auto_tts")
+
+            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent, presentation=_presentation):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -6208,6 +6217,7 @@ class GatewayRunner:
         response: str,
         agent_messages: list,
         already_sent: bool = False,
+        presentation: dict | None = None,
     ) -> bool:
         """Decide whether the runner should send a TTS voice reply.
 
@@ -6218,9 +6228,15 @@ class GatewayRunner:
         - voice input and base adapter auto-TTS already handled it (skip_double)
           UNLESS streaming already consumed the response (already_sent=True),
           in which case the base adapter won't have text for auto-TTS so the
-          runner must handle it.
+          runner must take over.
+        - agent declared voice_reply=False (action tools provide their own
+          sensory feedback, e.g. music playback)
         """
         if not response or response.startswith("Error:"):
+            return False
+
+        # Respect agent-level presentation hint
+        if presentation and presentation.get("voice_reply") is False:
             return False
 
         chat_id = event.source.chat_id

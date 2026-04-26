@@ -12443,6 +12443,30 @@ class AIAgent:
                 last_reasoning = msg["reasoning"]
                 break
 
+        # Determine whether this turn should produce a voice reply.
+        # Action-type tools (play_music, control_playback, etc.) produce their
+        # own sensory feedback (music starts playing). The model's short
+        # confirmation phrase ("好的，正在播放...") is unnecessary and can
+        # fight for the audio device. We let the tool itself declare this via
+        # voice_hint="action" in the registry.
+        _action_tools_called = False
+        try:
+            from tools.registry import registry
+            for msg in messages:
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    for tc in msg.get("tool_calls", []):
+                        if isinstance(tc, dict):
+                            name = tc.get("function", {}).get("name")
+                        else:
+                            name = getattr(getattr(tc, "function", None), "name", None)
+                        if registry.get_voice_hint(name) == "action":
+                            _action_tools_called = True
+                            break
+                    if _action_tools_called:
+                        break
+        except Exception:
+            pass
+
         # Build result with interrupt info if applicable
         result = {
             "final_response": final_response,
@@ -12468,6 +12492,9 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "presentation": {
+                "voice_reply": not _action_tools_called,
+            },
         }
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be

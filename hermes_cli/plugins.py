@@ -213,6 +213,7 @@ class PluginContext:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        voice_hint: str | None = None,
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided."""
         from tools.registry import registry
@@ -227,6 +228,7 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            voice_hint=voice_hint,
         )
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)

@@ -103,8 +103,21 @@ class AudioPlayer:
                         rate = self.sample_rate
                         audio_np = np.frombuffer(data, dtype=np.int16)
 
-                    sd.play(audio_np, samplerate=rate)
-                    sd.wait()
+                    # Stop any lingering stream before opening a new one
+                    sd.stop()
+                    # Retry once if the device is momentarily unavailable
+                    # (e.g. another player still releasing the ALSA handle)
+                    for attempt in range(2):
+                        try:
+                            sd.play(audio_np, samplerate=rate)
+                            sd.wait()
+                            break
+                        except Exception as e:
+                            if attempt == 0 and "Device unavailable" in str(e):
+                                import time
+                                time.sleep(0.5)
+                                continue
+                            raise
                 except Exception:
                     logger.exception("Error playing audio file %s", path)
                 finally:
@@ -139,8 +152,18 @@ class AudioPlayer:
             def _play() -> None:
                 try:
                     audio_np = np.frombuffer(audio_data, dtype=np.int16)
-                    sd.play(audio_np, samplerate=rate)
-                    sd.wait()
+                    sd.stop()
+                    for attempt in range(2):
+                        try:
+                            sd.play(audio_np, samplerate=rate)
+                            sd.wait()
+                            break
+                        except Exception as e:
+                            if attempt == 0 and "Device unavailable" in str(e):
+                                import time
+                                time.sleep(0.5)
+                                continue
+                            raise
                 except Exception:
                     logger.exception("Error playing PCM audio")
                 finally:

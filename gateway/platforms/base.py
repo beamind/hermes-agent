@@ -337,6 +337,7 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
 
 
 from dataclasses import dataclass, field
+from typing import Set
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
@@ -828,6 +829,11 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Runtime flags — set by the runner to influence adapter behaviour
+    # for this specific message (e.g. suppress_auto_tts when an action
+    # tool has already provided sensory feedback).
+    flags: Set[str] = field(default_factory=set)
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -2219,6 +2225,7 @@ class BasePlatformAdapter(ABC):
                 if (event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files
+                        and "suppress_auto_tts" not in event.flags
                         and event.source.chat_id not in self._auto_tts_disabled_chats):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
