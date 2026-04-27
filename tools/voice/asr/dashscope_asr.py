@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import shutil
-import subprocess
+import queue
 import threading
 import time
 
@@ -95,6 +94,10 @@ class DashScopeASR(BaseASR):
 
     The model has built-in VAD — it detects when the user stops speaking,
     so the caller does not need silence detection.
+
+    This implementation consumes live audio from a :class:`queue.Queue`
+    provided by :class:`tools.voice.audio_capture.AudioCapture`, avoiding
+    the microphone hand-off gap that previously caused dropped words.
     """
 
     def __init__(
@@ -103,7 +106,6 @@ class DashScopeASR(BaseASR):
         model: str = "qwen3-asr-flash-realtime",
         sample_rate: int = 16000,
         audio_format: str = "pcm",
-        alsadevice: str = "",
     ) -> None:
         if not _DASHSCOPE_AVAILABLE:
             raise RuntimeError(
@@ -117,7 +119,6 @@ class DashScopeASR(BaseASR):
         self.model = model
         self.sample_rate = sample_rate
         self.audio_format = audio_format
-        self._alsadevice = alsadevice or "hw:1,0"
 
     def _create_conversation(self, callback: _ASRCallback) -> OmniRealtimeConversation:
         return OmniRealtimeConversation(
@@ -169,15 +170,21 @@ class DashScopeASR(BaseASR):
             raise callback.error
         return text
 
-    async def recognize_from_microphone(self, pre_audio: bytes = b"") -> str:
-        """Stream from microphone, let the model detect when the user stops.
+    async def recognize_from_microphone(
+        self, pre_audio: bytes = b"", audio_queue: queue.Queue | None = None
+    ) -> str:
+        """Stream audio from a shared Queue, let the model detect when the user stops.
 
         Args:
-            pre_audio: PCM bytes (int16, mono) from the wake-word ring buffer
-                       that should be sent before live mic input.
+            pre_audio: PCM bytes (int16, mono) captured before the mic stream
+                starts (e.g. from a wake-word ring buffer).
+            audio_queue: Live audio chunk queue provided by AudioCapture.
 
         Returns the recognized text once the model signals sentence end.
         """
+        if audio_queue is None:
+            raise ValueError("audio_queue is required for recognize_from_microphone")
+
         loop = asyncio.get_event_loop()
         callback = _ASRCallback()
 
@@ -203,83 +210,30 @@ class DashScopeASR(BaseASR):
                     len(pre_audio),
                 )
 
-            chunk_duration = 0.1  # 100ms
-            chunk_samples = int(self.sample_rate * chunk_duration)
-
-            if not shutil.which("arecord"):
-                logger.error("arecord not found in PATH")
-                return
-
-            cmd = [
-                "arecord",
-                "-D", self._alsadevice,
-                "-f", "S16_LE",
-                "-r", str(self.sample_rate),
-                "-c", "2",
-                "-t", "raw",
-                "-",
-            ]
-
-            arecord_proc: subprocess.Popen | None = None
-            try:
-                arecord_proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-                # Quick health-check: if arecord exits immediately the device is
-                # probably busy (another process already has it open).
-                time.sleep(0.2)
-                if arecord_proc.poll() is not None:
-                    logger.error(
-                        "arecord failed to start (exit code %s). "
-                        "The microphone may be in use by another process.",
-                        arecord_proc.returncode,
-                    )
-                    return
-
-                chunk_bytes = chunk_samples * 4  # 2 ch * 2 bytes
-
-                while not callback.sentence_done.is_set():
-                    # When server VAD detects speech end, tell it we're done
-                    # so it returns the final transcript.
-                    if callback.speech_stopped.is_set():
-                        try:
-                            conv.end_session()
-                        except Exception:
-                            pass
-                        callback.speech_stopped.clear()
-
-                    pcm = arecord_proc.stdout.read(chunk_bytes)
-                    if len(pcm) < chunk_bytes:
-                        if arecord_proc.poll() is not None:
-                            logger.error(
-                                "arecord process exited unexpectedly with code %s",
-                                arecord_proc.returncode,
-                            )
-                            break
-                        continue
-                    # Take left channel from stereo S16_LE
-                    left = bytearray()
-                    for i in range(0, len(pcm), 4):
-                        left.extend(pcm[i:i+2])
-                    conv.append_audio(
-                        base64.b64encode(bytes(left)).decode("ascii")
-                    )
-            except Exception:
-                logger.exception("Microphone streaming error")
-            finally:
-                if arecord_proc is not None:
-                    arecord_proc.terminate()
+            # Consume live audio from the shared queue
+            while not callback.sentence_done.is_set():
+                # When server VAD detects speech end, tell it we're done
+                # so it returns the final transcript.
+                if callback.speech_stopped.is_set():
                     try:
-                        arecord_proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        arecord_proc.kill()
+                        conv.end_session()
+                    except Exception:
+                        pass
+                    callback.speech_stopped.clear()
+
                 try:
-                    conv.end_session()
-                    conv.close()
-                except Exception:
-                    pass
+                    chunk = audio_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
+                conv.append_audio(
+                    base64.b64encode(chunk).decode("ascii")
+                )
+
+            try:
+                conv.close()
+            except Exception:
+                pass
 
         await loop.run_in_executor(None, _stream)
 
@@ -301,8 +255,5 @@ def check_dashscope_asr_requirements() -> bool:
     """Check if DashScope ASR dependencies are available."""
     if not _DASHSCOPE_AVAILABLE:
         logger.warning("dashscope not installed. Run: uv pip install dashscope")
-        return False
-    if not shutil.which("arecord"):
-        logger.warning("arecord not found in PATH. Install alsa-utils.")
         return False
     return True

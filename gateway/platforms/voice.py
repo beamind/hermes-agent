@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+import queue
 from pathlib import Path
 from typing import Any, Optional
 
@@ -43,7 +43,7 @@ def _load_voice_config() -> dict[str, Any]:
 
 def _expand_path(path: str) -> str:
     """Expand user home and env vars in a path string."""
-    return os.path.expandvars(os.path.expanduser(path))
+    return __import__("os").path.expandvars(__import__("os").path.expanduser(path))
 
 
 class VoiceAdapter(BasePlatformAdapter):
@@ -52,6 +52,11 @@ class VoiceAdapter(BasePlatformAdapter):
     Listens for a wake word on the microphone, streams audio to ASR,
     injects the transcribed text into the Hermes agent pipeline, and
     plays TTS responses through the local speaker.
+
+    Uses a single persistent :class:`tools.voice.audio_capture.AudioCapture`
+    process so that the microphone is never released between wake-word
+    detection and ASR, eliminating the audio drop-out that previously
+    caused missing words (e.g. "play Wang Fei's Red Bean" → "Dou").
     """
 
     MAX_MESSAGE_LENGTH = 4000
@@ -59,6 +64,7 @@ class VoiceAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform.VOICE)
         self._voice_cfg = _load_voice_config()
+        self._audio_capture: Any = None
         self._wake_detector: Any = None
         self._asr: Any = None
         self._audio_player: Any = None
@@ -95,7 +101,7 @@ class VoiceAdapter(BasePlatformAdapter):
                 logger.error("DashScope ASR requirements not met")
                 return False
 
-            api_key = os.getenv("ASR_DASHSCOPE_API_KEY", "").strip()
+            api_key = __import__("os").getenv("ASR_DASHSCOPE_API_KEY", "").strip()
             if not api_key:
                 logger.error(
                     "ASR_DASHSCOPE_API_KEY not configured. "
@@ -107,7 +113,6 @@ class VoiceAdapter(BasePlatformAdapter):
                 api_key=api_key,
                 model=self._voice_cfg.get("asr", {}).get("dashscope", {}).get("model", "qwen3-asr-flash-realtime"),
                 sample_rate=self._voice_cfg.get("asr", {}).get("dashscope", {}).get("sample_rate", 16000),
-                alsadevice=self._voice_cfg.get("audio", {}).get("mic_device", ""),
             )
         else:
             logger.error("Unsupported ASR provider: %s", asr_provider)
@@ -124,7 +129,17 @@ class VoiceAdapter(BasePlatformAdapter):
             max_continuation_rounds=int(self._voice_cfg.get("session", {}).get("max_continuation_rounds", 3)),
         )
 
-        # 4. Wake word detector
+        # 4. Unified audio capture (must start before wake-word detector)
+        from tools.voice.audio_capture import AudioCapture
+
+        self._audio_capture = AudioCapture(
+            sample_rate=16000,
+            alsadevice=self._voice_cfg.get("audio", {}).get("mic_device", ""),
+            mic_gain=float(self._voice_cfg.get("wake_word", {}).get("mic_gain", 1.0)),
+        )
+        self._audio_capture.start()
+
+        # 5. Wake word detector
         from tools.voice.wake_word import WakeWordDetector, check_wake_word_requirements
 
         if not check_wake_word_requirements():
@@ -160,7 +175,6 @@ class VoiceAdapter(BasePlatformAdapter):
             sample_rate=16000,
             pre_buffer_seconds=1.0,
             mic_gain=float(ww_cfg.get("mic_gain", 1.0)),
-            alsadevice=self._voice_cfg.get("audio", {}).get("mic_device", ""),
         )
 
         self._connected = True
@@ -189,6 +203,9 @@ class VoiceAdapter(BasePlatformAdapter):
         if self._session_manager:
             await self._session_manager.stop()
 
+        if self._audio_capture:
+            self._audio_capture.stop()
+
         if self._audio_player:
             self._audio_player.stop()
 
@@ -216,6 +233,14 @@ class VoiceAdapter(BasePlatformAdapter):
             logger.warning("Audio player not initialized")
             return SendResult(success=False, error="Audio player not initialized")
 
+        # Release microphone so ALSA device is free for TTS playback.
+        # arecord holds the hw: device exclusively; sounddevice cannot
+        # open the output stream while arecord is running.
+        if self._audio_capture and self._audio_capture.is_running:
+            logger.debug("Pausing AudioCapture for TTS playback")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._audio_capture.stop)
+
         await self._session_manager.on_agent_response_received()
 
         try:
@@ -224,6 +249,16 @@ class VoiceAdapter(BasePlatformAdapter):
             logger.exception("Failed to play TTS audio")
             return SendResult(success=False, error="Playback failed")
         finally:
+            # Resume microphone capture BEFORE notifying session manager.
+            # Multi-turn continuation may immediately start ASR, which
+            # needs AudioCapture to be producing chunks.
+            if self._audio_capture and not self._audio_capture.is_running:
+                logger.debug("Resuming AudioCapture after TTS")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._audio_capture.start)
+                # Discard any chunks captured during TTS (speaker echo)
+                self._audio_capture.drain_queue()
+
             # Notify session manager that speaking is done
             try:
                 await self._session_manager.on_speaking_complete()
@@ -239,15 +274,34 @@ class VoiceAdapter(BasePlatformAdapter):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _wake_consumer(self, audio_queue: queue.Queue, wake_detector: Any) -> None:
+        """Background thread: feed audio chunks from AudioCapture to WakeWordDetector."""
+        while self._connected and wake_detector.is_running:
+            try:
+                chunk = audio_queue.get(timeout=0.5)
+                wake_detector.feed_chunk(chunk)
+            except queue.Empty:
+                continue
+            except Exception:
+                logger.exception("Wake-word consumer error")
+                break
+
     async def _wake_loop(self) -> None:
-        """Run wake-word detection in an asyncio-friendly way."""
+        """Run wake-word detection in an asyncio-friendly way.
+
+        A single persistent AudioCapture process feeds a Queue.  A
+        background thread pulls from that Queue and pushes chunks into
+        WakeWordDetector.  When the wake word fires the detector is
+        stopped (so its consumer thread exits), but AudioCapture keeps
+        running — ASR simply starts reading from the same Queue, giving
+        us a zero-gap hand-off.
+        """
         loop = asyncio.get_event_loop()
 
         def _on_wake_sync(pre_audio: bytes) -> None:
-            # Stop wake detector IMMEDIATELY in the detector thread.
-            # Any asyncio scheduling delay lets the detector keep consuming
-            # microphone data, causing ASR to miss the user's post-wake word
-            # speech (e.g. "play Wang Fei's Red Bean" after "Xiao Ai Tong Xue").
+            # Stop the detector immediately so its consumer thread exits.
+            # The Queue keeps filling from AudioCapture, so ASR will pick
+            # up every chunk that follows without losing audio.
             if self._wake_detector and self._wake_detector.is_running:
                 self._wake_detector.stop()
             asyncio.run_coroutine_threadsafe(
@@ -262,8 +316,15 @@ class VoiceAdapter(BasePlatformAdapter):
                     and self._session_manager.is_idle
                 ):
                     logger.debug("Restarting wake-word detector")
+                    # Discard stale audio from previous turn so the detector
+                    # does not process old speech / TTS echo.
+                    self._audio_capture.drain_queue()
+                    self._wake_detector.start(on_wake=_on_wake_sync)
                     await loop.run_in_executor(
-                        None, self._wake_detector.start, _on_wake_sync
+                        None,
+                        self._wake_consumer,
+                        self._audio_capture.get_queue(),
+                        self._wake_detector,
                     )
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
@@ -281,14 +342,13 @@ class VoiceAdapter(BasePlatformAdapter):
 
     async def _start_asr(self, pre_audio: bytes) -> None:
         """Start ASR listening and wire completion to session manager."""
-        if not self._asr:
+        if not self._asr or not self._audio_capture:
             return
 
-        # Wake detector is already stopped synchronously in _on_wake_sync
-        # so the microphone is free for ASR.
-
         async def _listen() -> str:
-            return await self._asr.recognize_from_microphone(pre_audio)
+            return await self._asr.recognize_from_microphone(
+                pre_audio, self._audio_capture.get_queue()
+            )
 
         await self._session_manager.start_listening(_listen())
 
