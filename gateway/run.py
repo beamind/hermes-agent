@@ -11053,14 +11053,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             hermes_home = str(get_hermes_home())
             logger.error(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-                "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
-                existing_pid, hermes_home,
+                "Use 'hermes gateway run --replace' to replace it, or 'kill %d' to stop it first.",
+                existing_pid, hermes_home, existing_pid,
             )
             print(
                 f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'hermes gateway restart' to replace it,\n"
-                f"   or 'hermes gateway stop' to kill it first.\n"
-                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+                f"   Use 'hermes gateway run --replace' to replace it,\n"
+                f"   or 'kill {existing_pid}' to stop it first.\n"
             )
             return False
 

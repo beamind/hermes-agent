@@ -212,14 +212,29 @@ class DashScopeASR(BaseASR):
 
             # Consume live audio from the shared queue
             while not callback.sentence_done.is_set():
-                # When server VAD detects speech end, tell it we're done
-                # so it returns the final transcript.
+                # When server VAD detects speech end, keep sending audio for
+                # a short grace period before ending the session.  This catches
+                # brief pauses (e.g. the gap between wake-word and command)
+                # without prematurely truncating the utterance.
                 if callback.speech_stopped.is_set():
-                    try:
-                        conv.end_session()
-                    except Exception:
-                        pass
+                    _grace_deadline = time.time() + 1.5
+                    while time.time() < _grace_deadline:
+                        if callback.sentence_done.is_set():
+                            break
+                        try:
+                            chunk = audio_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            continue
+                        conv.append_audio(
+                            base64.b64encode(chunk).decode("ascii")
+                        )
+                    if not callback.sentence_done.is_set():
+                        try:
+                            conv.end_session()
+                        except Exception:
+                            pass
                     callback.speech_stopped.clear()
+                    continue
 
                 try:
                     chunk = audio_queue.get(timeout=0.1)

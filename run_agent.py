@@ -12459,13 +12459,31 @@ class AIAgent:
                             name = tc.get("function", {}).get("name")
                         else:
                             name = getattr(getattr(tc, "function", None), "name", None)
-                        if registry.get_voice_hint(name) == "action":
+                        vh = registry.get_voice_hint(name)
+                        if vh == "action":
                             _action_tools_called = True
                             break
                     if _action_tools_called:
                         break
         except Exception:
             pass
+
+        # Diagnostic: log what we found so we can trace why voice_hint isn't firing.
+        _vh_debug_msgs = []
+        for _m in messages:
+            _role = _m.get("role", "?")
+            _tcs = _m.get("tool_calls")
+            if _tcs:
+                _names = []
+                for _tc in _tcs:
+                    if isinstance(_tc, dict):
+                        _names.append(_tc.get("function", {}).get("name", "?"))
+                    else:
+                        _names.append(getattr(getattr(_tc, "function", None), "name", "?"))
+                _vh_debug_msgs.append(f"{_role}(tool_calls={_names})")
+            else:
+                _vh_debug_msgs.append(f"{_role}")
+        logger.info("voice_hint_check: _action_tools_called=%s messages=%s", _action_tools_called, " | ".join(_vh_debug_msgs))
 
         # Build result with interrupt info if applicable
         result = {

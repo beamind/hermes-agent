@@ -59,9 +59,13 @@ class MusicPlayer:
 
     def __init__(self, default_volume: int = 70) -> None:
         mpv = _import_mpv()
-        # CHANGE 1 (from home-ai-assistant): removed ao="alsa" hardcoding.
-        # Let mpv pick the default audio backend so this works on macOS too.
-        self._player = mpv.MPV()
+        # Try PulseAudio first — on Linux+PipeWire this lets mpv share the
+        # audio device with other apps (e.g. TTS) instead of fighting for
+        # exclusive ALSA access via PortAudio.  Fall back to mpv default.
+        try:
+            self._player = mpv.MPV(ao="pulse")
+        except Exception:
+            self._player = mpv.MPV()
         self._player.volume = default_volume
         self._lock = threading.RLock()
         self._playlist: list[dict[str, str]] = []

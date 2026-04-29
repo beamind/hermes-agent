@@ -539,7 +539,6 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._context_engine = None
-        self._discovered = True
 
         manifests: List[PluginManifest] = []
 
@@ -649,6 +648,7 @@ class PluginManager:
                 len(self._plugins),
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
+        self._discovered = True
 
     # -----------------------------------------------------------------------
     # Directory scanning
