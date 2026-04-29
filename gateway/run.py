@@ -10193,6 +10193,7 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "presentation": result.get("presentation", {}),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -10284,6 +10285,7 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "presentation": result.get("presentation", {}),
             }
         
         # Start progress message sender if enabled
