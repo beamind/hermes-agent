@@ -4817,6 +4817,19 @@ class GatewayRunner:
             # base-adapter auto-TTS is also suppressed.
             if _presentation.get("voice_reply") is False:
                 event.flags.add("suppress_auto_tts")
+                # When TTS is suppressed, play_tts() is never called, so the
+                # VoiceAdapter's session_manager never receives the
+                # on_agent_response_received() / on_speaking_complete() signals
+                # that transition it out of PROCESSING back to IDLE.  Without
+                # that transition the wake-word loop never restarts.
+                # Manually drive the state machine here.
+                _voice_adapter = self.adapters.get(source.platform)
+                if _voice_adapter and hasattr(_voice_adapter, "_session_manager"):
+                    try:
+                        await _voice_adapter._session_manager.on_agent_response_received()
+                        await _voice_adapter._session_manager.on_speaking_complete()
+                    except Exception:
+                        pass
 
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent, presentation=_presentation):
                 await self._send_voice_reply(event, response)
