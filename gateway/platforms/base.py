@@ -1253,6 +1253,28 @@ class BasePlatformAdapter(ABC):
         """
         pass
     
+    async def on_response_delivered(
+        self,
+        response: str,
+        has_sensory_feedback: bool = False,
+        sensory_feedback_types: list[str] = None,
+    ) -> None:
+        """Notify the adapter that an agent response has been delivered.
+
+        Called by the gateway after the agent finishes processing a turn.
+        Adapters that manage hardware state (e.g. VoiceAdapter's session
+        machine) can use this to transition state without relying on
+        play_tts() being called.
+
+        Args:
+            response: The final text response from the agent.
+            has_sensory_feedback: Whether the turn produced sensory feedback
+                (e.g. audio from play_music) that makes TTS redundant.
+            sensory_feedback_types: List of feedback types produced
+                (e.g. ["audio"], ["visual"], or []).
+        """
+        pass
+    
     async def send_image(
         self,
         chat_id: str,

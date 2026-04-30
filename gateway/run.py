@@ -4805,8 +4805,6 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
-            )
-
             # Auto voice reply: send TTS audio before the text response
             _presentation = agent_result.get("presentation", {})
             _already_sent = bool(agent_result.get("already_sent"))
@@ -4815,19 +4813,20 @@ class GatewayRunner:
             # (e.g. an action tool like play_music already provides sensory
             # feedback), forward that intent to the adapter via event flags so
             # base-adapter auto-TTS is also suppressed.
-            if _presentation.get("voice_reply") is False:
+            #
+            # Phase 3: Use unified adapter interface instead of hack.
+            _has_audio_feedback = _presentation.get("sensory_feedback_types") and "audio" in _presentation.get("sensory_feedback_types")
+            if _presentation.get("voice_reply") is False or _has_audio_feedback:
                 event.flags.add("suppress_auto_tts")
-                # When TTS is suppressed, play_tts() is never called, so the
-                # VoiceAdapter's session_manager never receives the
-                # on_agent_response_received() / on_speaking_complete() signals
-                # that transition it out of PROCESSING back to IDLE.  Without
-                # that transition the wake-word loop never restarts.
-                # Manually drive the state machine here.
-                _voice_adapter = self.adapters.get(source.platform)
-                if _voice_adapter and hasattr(_voice_adapter, "_session_manager"):
+                # Notify adapter through unified interface
+                adapter = self.adapters.get(source.platform)
+                if adapter:
                     try:
-                        await _voice_adapter._session_manager.on_agent_response_received()
-                        await _voice_adapter._session_manager.on_speaking_complete()
+                        await adapter.on_response_delivered(
+                            response=response,
+                            has_sensory_feedback=_has_audio_feedback,
+                            sensory_feedback_types=_presentation.get("sensory_feedback_types", []),
+                        )
                     except Exception:
                         pass
 

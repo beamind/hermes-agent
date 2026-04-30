@@ -44,12 +44,12 @@ def _on_session_end(**kwargs) -> None:
 def register(ctx) -> None:
     """Register all smart-speaker tools. Called once by the plugin loader."""
     _TOOLS = (
-        ("play_music", PLAY_MUSIC_SCHEMA, _handle_play_music, "🎵", "action"),
-        ("control_playback", CONTROL_PLAYBACK_SCHEMA, _handle_control_playback, "🎛️", "action"),
-        ("get_playback_status", GET_PLAYBACK_STATUS_SCHEMA, _handle_get_playback_status, "📊", None),
+        ("play_music", PLAY_MUSIC_SCHEMA, _handle_play_music, "🎵"),
+        ("control_playback", CONTROL_PLAYBACK_SCHEMA, _handle_control_playback, "🎛️"),
+        ("get_playback_status", GET_PLAYBACK_STATUS_SCHEMA, _handle_get_playback_status, "📊"),
     )
 
-    for name, schema, handler, emoji, vhint in _TOOLS:
+    for name, schema, handler, emoji in _TOOLS:
         ctx.register_tool(
             name=name,
             toolset="smart_speaker",
@@ -57,7 +57,6 @@ def register(ctx) -> None:
             handler=handler,
             check_fn=_check_music_available,
             emoji=emoji,
-            voice_hint=vhint,
         )
         logger.info("Registered tool: %s", name)
 

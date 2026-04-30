@@ -1117,6 +1117,11 @@ class AIAgent:
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
         
+        # Sensory feedback tracking — collects audio/visual feedback declared by
+        # tools during execution so the gateway can suppress redundant TTS.
+        # Populated in real-time during tool execution, cleared at turn start.
+        self._current_turn_sensory_feedback: set[str] = set()
+        
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
         self.providers_ignored = providers_ignored
@@ -8922,6 +8927,17 @@ class AIAgent:
             self._current_tool = None
             self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
+            # ── Sensory feedback extraction ─────────────────────────────────
+            # If the tool result declares sensory feedback (e.g. audio from
+            # play_music), collect it for the presentation hint.
+            try:
+                if isinstance(function_result, str):
+                    _parsed = json.loads(function_result)
+                    if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
+                        self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
@@ -9233,6 +9249,10 @@ class AIAgent:
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
         self._invalid_tool_retries = 0
+        
+        # Clear sensory feedback tracking for this turn.
+        # Tools will populate this during execution via their result dicts.
+        self._current_turn_sensory_feedback.clear()
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
         self._incomplete_scratchpad_retries = 0
@@ -12444,31 +12464,15 @@ class AIAgent:
                 break
 
         # Determine whether this turn should produce a voice reply.
-        # Action-type tools (play_music, control_playback, etc.) produce their
-        # own sensory feedback (music starts playing). The model's short
-        # confirmation phrase ("好的，正在播放...") is unnecessary and can
-        # fight for the audio device. We let the tool itself declare this via
-        # voice_hint="action" in the registry.
-        _action_tools_called = False
-        try:
-            from tools.registry import registry
-            for msg in messages:
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    for tc in msg.get("tool_calls", []):
-                        if isinstance(tc, dict):
-                            name = tc.get("function", {}).get("name")
-                        else:
-                            name = getattr(getattr(tc, "function", None), "name", None)
-                        vh = registry.get_voice_hint(name)
-                        if vh == "action":
-                            _action_tools_called = True
-                            break
-                    if _action_tools_called:
-                        break
-        except Exception:
-            pass
-
-        # Diagnostic: log what we found so we can trace why voice_hint isn't firing.
+        # Tools that produce their own sensory feedback (e.g. play_music emits
+        # audio) declare this in their result dict via "sensory_feedback".
+        # When audio feedback is present, the model's short confirmation phrase
+        # ("好的，正在播放...") is unnecessary and can fight for the audio device.
+        _has_audio_feedback = "audio" in self._current_turn_sensory_feedback
+        _sensory_feedback_types = list(self._current_turn_sensory_feedback)
+        _should_voice_reply = not _has_audio_feedback
+        
+        # Diagnostic: log what we found so we can trace TTS suppression.
         _vh_debug_msgs = []
         for _m in messages:
             _role = _m.get("role", "?")
@@ -12483,7 +12487,10 @@ class AIAgent:
                 _vh_debug_msgs.append(f"{_role}(tool_calls={_names})")
             else:
                 _vh_debug_msgs.append(f"{_role}")
-        logger.info("voice_hint_check: _action_tools_called=%s messages=%s", _action_tools_called, " | ".join(_vh_debug_msgs))
+        logger.info(
+            "sensory_feedback_check: _has_audio_feedback=%s _sensory_feedback=%s _should_voice_reply=%s messages=%s",
+            _has_audio_feedback, _sensory_feedback_types, _should_voice_reply, " | ".join(_vh_debug_msgs)
+        )
 
         # Build result with interrupt info if applicable
         result = {
@@ -12511,7 +12518,8 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
             "presentation": {
-                "voice_reply": not _action_tools_called,
+                "voice_reply": _should_voice_reply,
+                "sensory_feedback_types": _sensory_feedback_types,
             },
         }
         # If a /steer landed after the final assistant turn (no more tool

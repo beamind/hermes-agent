@@ -372,6 +372,26 @@ class VoiceAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+    async def on_response_delivered(
+        self,
+        response: str,
+        has_sensory_feedback: bool = False,
+        sensory_feedback_types: list[str] = None,
+    ) -> None:
+        """VoiceAdapter: drive state machine when response is delivered.
+
+        When sensory feedback is present (e.g. play_music already playing
+        audio), TTS is skipped so play_tts() never drives the state machine.
+        We manually transition back to IDLE so the wake-word loop restarts.
+        """
+        if has_sensory_feedback:
+            logger.info("Sensory feedback present — driving state machine to IDLE")
+            try:
+                await self._session_manager.on_agent_response_received()
+                await self._session_manager.on_speaking_complete()
+            except Exception:
+                pass
+
     async def _on_speaking_complete(self) -> None:
         """Callback: TTS finished.
 
