@@ -59,6 +59,27 @@ def _get_library_path() -> str | None:
     return path
 
 
+def _try_play_intro(song: dict) -> None:
+    """Generate and play a spoken intro before the song, if enabled.
+
+    All failures are silently caught — the song plays regardless.
+    Uses lazy imports so a missing dependency in song_intro.py
+    does not break the music tools.
+    """
+    try:
+        from .song_intro import intro_enabled, generate_and_play_intro
+        if not intro_enabled():
+            return
+        generate_and_play_intro(
+            title=song.get("title", ""),
+            artist=song.get("artist", ""),
+        )
+    except ImportError:
+        pass
+    except Exception:
+        logger.exception("Song intro failed, continuing to music")
+
+
 def _check_music_available() -> bool:
     """Always return True so LLM knows about the music feature.
 
@@ -118,6 +139,8 @@ def _handle_play_music(args: dict, **kw) -> str:
                     "artist": "",
                 })
             player.load_playlist(songs)
+            if songs:
+                _try_play_intro(songs[0])
             success = player.play_index(0)
             if success:
                 status = player.get_status()
@@ -182,6 +205,8 @@ def _handle_play_music(args: dict, **kw) -> str:
         )
 
     player.load_playlist(songs)
+    if songs:
+        _try_play_intro(songs[0])
     success = player.play_index(0)
     if success:
         status = player.get_status()
