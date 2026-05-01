@@ -133,6 +133,56 @@ class VoiceSessionManager:
             self._state = _State.SPEAKING
             logger.info("TTS playing → SPEAKING")
 
+    async def on_tts_skipped(self) -> None:
+        """Called when the response is delivered without TTS playback.
+
+        Sensory-feedback tools (e.g. play_music) produce their own audio,
+        so TTS is suppressed.  This method skips the intermediate SPEAKING
+        state and transitions directly to IDLE (or LISTENING for multi-turn
+        continuation), keeping all state machine logic inside the manager
+        instead of leaking into the adapter.
+        """
+        async with self._state_lock:
+            if self._stopped:
+                return
+            if self._state != _State.PROCESSING:
+                return
+
+            if self._continuation_count < self._max_continuation_rounds:
+                self._state = _State.LISTENING
+                self._continuation_count += 1
+                logger.info(
+                    "TTS skipped → LISTENING (continuation %d/%d, timeout=%.1fs)",
+                    self._continuation_count,
+                    self._max_continuation_rounds,
+                    self._continuation_timeout,
+                )
+            else:
+                self._state = _State.IDLE
+                self._continuation_count = 0
+                logger.info("TTS skipped → IDLE (max continuations reached)")
+                return
+
+        # Start continuation timer (same logic as on_speaking_complete)
+        if self._continuation_timer and not self._continuation_timer.done():
+            self._continuation_timer.cancel()
+
+        async def _timeout() -> None:
+            await asyncio.sleep(self._continuation_timeout)
+            async with self._state_lock:
+                if self._state == _State.LISTENING:
+                    logger.info("Continuation timeout → IDLE")
+                    self._state = _State.IDLE
+                    self._continuation_count = 0
+
+        self._continuation_timer = asyncio.create_task(_timeout())
+
+        if self._on_speaking_complete:
+            try:
+                await self._on_speaking_complete()
+            except Exception:
+                logger.exception("on_speaking_complete hook failed")
+
     async def on_speaking_complete(self) -> None:
         """Called when TTS playback finishes."""
         async with self._state_lock:

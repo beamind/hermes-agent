@@ -114,7 +114,7 @@ def _handle_play_music(args: dict, **kw) -> str:
                     "query": query,
                     "matches_found": len(matches),
                     "now_playing": _status_to_dict(status),
-                    "sensory_feedback": "audio",  # Phase 2: self-declare audio feedback
+                    "sensory_feedback": "audio",
                 })
             return tool_error("Failed to start playback")
 
@@ -179,7 +179,7 @@ def _handle_play_music(args: dict, **kw) -> str:
             "matches_found": len(results),
             "playable": len(songs),
             "now_playing": _status_to_dict(status),
-            "sensory_feedback": "audio",  # Phase 2: self-declare audio feedback
+            "sensory_feedback": "audio",
         })
     return tool_error("Failed to start playback from Netease")
 
@@ -206,7 +206,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": True,
             "action": "pause",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio",  # Phase 2: audio control action
+            "sensory_feedback": "audio",
         })
 
     if action == "resume":
@@ -215,7 +215,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": True,
             "action": "resume",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio",  # Phase 2: audio control action
+            "sensory_feedback": "audio",
         })
 
     if action == "stop":
@@ -224,7 +224,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": True,
             "action": "stop",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio",  # Phase 2: audio control action
+            "sensory_feedback": "audio",
         })
 
     if action == "next":
@@ -233,7 +233,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": success,
             "action": "next",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio" if success else None,  # Phase 2: only if actually changed
+            "sensory_feedback": "audio" if success else None,
         })
 
     if action == "previous":
@@ -242,7 +242,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": success,
             "action": "previous",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio" if success else None,  # Phase 2: only if actually changed
+            "sensory_feedback": "audio" if success else None,
         })
 
     if action == "volume_set":
@@ -259,7 +259,7 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "action": "volume_set",
             "volume": vol,
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio",  # Phase 2: volume change is audio feedback
+            "sensory_feedback": "audio",
         })
 
     return tool_error(f"Unhandled action: {action}")

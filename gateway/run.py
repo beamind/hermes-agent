@@ -4831,15 +4831,13 @@ class GatewayRunner:
             _presentation = agent_result.get("presentation", {})
             _already_sent = bool(agent_result.get("already_sent"))
 
-            # If the agent declared this turn should not produce voice feedback
-            # (e.g. an action tool like play_music already provides sensory
-            # feedback), forward that intent to the adapter via event flags so
-            # base-adapter auto-TTS is also suppressed.
-            #
-            # Phase 3: Use unified adapter interface instead of hack.
+            # When the agent declares this turn should not produce voice
+            # feedback (e.g. play_music already provides audio), set
+            # voice_reply=False on the event so the base adapter skips
+            # auto-TTS and on_response_delivered() drives the state machine.
             _has_audio_feedback = _presentation.get("sensory_feedback_types") and "audio" in _presentation.get("sensory_feedback_types")
             if _presentation.get("voice_reply") is False or _has_audio_feedback:
-                event.flags.add("suppress_auto_tts")
+                event.voice_reply = False
                 # Notify adapter through unified interface
                 adapter = self.adapters.get(source.platform)
                 if adapter:

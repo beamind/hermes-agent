@@ -831,9 +831,14 @@ class MessageEvent:
     internal: bool = False
 
     # Runtime flags — set by the runner to influence adapter behaviour
-    # for this specific message (e.g. suppress_auto_tts when an action
+    # for this specific message (e.g. voice_reply when an action
     # tool has already provided sensory feedback).
     flags: Set[str] = field(default_factory=set)
+
+    # When False, auto-TTS is suppressed for this message (e.g. a music
+    # tool already provided audio sensory feedback).  Set by the gateway
+    # runner based on the agent result's presentation hint.
+    voice_reply: bool = True
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -2247,7 +2252,7 @@ class BasePlatformAdapter(ABC):
                 if (event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files
-                        and "suppress_auto_tts" not in event.flags
+                        and event.voice_reply
                         and event.source.chat_id not in self._auto_tts_disabled_chats):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements

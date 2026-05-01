@@ -2782,7 +2782,24 @@ class AIAgent:
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
-    
+
+    def _collect_sensory_feedback(self, function_result: str) -> None:
+        """Extract sensory_feedback from a tool result JSON string.
+
+        Tools that produce their own sensory output (e.g. play_music plays
+        audio directly) declare a ``sensory_feedback`` field in their JSON
+        result.  This helper parses that field and accumulates it into
+        ``_current_turn_sensory_feedback`` so the gateway can suppress
+        redundant TTS.
+        """
+        try:
+            if isinstance(function_result, str):
+                _parsed = json.loads(function_result)
+                if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
+                    self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
     def _strip_think_blocks(self, content: str) -> str:
         """Remove reasoning/thinking blocks from content, returning only visible text.
 
@@ -8575,15 +8592,7 @@ class AIAgent:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
             # ── Sensory feedback extraction ──────────────────────────────
-            # Mirror the sequential path: collect sensory_feedback declared
-            # by tools so the gateway can suppress redundant TTS.
-            try:
-                if isinstance(function_result, str):
-                    _parsed = json.loads(function_result)
-                    if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
-                        self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
+            self._collect_sensory_feedback(function_result)
 
             function_result = maybe_persist_tool_result(
                 content=function_result,
@@ -8939,15 +8948,7 @@ class AIAgent:
             self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
             # ── Sensory feedback extraction ─────────────────────────────────
-            # If the tool result declares sensory feedback (e.g. audio from
-            # play_music), collect it for the presentation hint.
-            try:
-                if isinstance(function_result, str):
-                    _parsed = json.loads(function_result)
-                    if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
-                        self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                pass
+            self._collect_sensory_feedback(function_result)
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

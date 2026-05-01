@@ -401,13 +401,12 @@ class VoiceAdapter(BasePlatformAdapter):
 
         When sensory feedback is present (e.g. play_music already playing
         audio), TTS is skipped so play_tts() never drives the state machine.
-        We manually transition back to IDLE so the wake-word loop restarts.
+        We delegate to the session manager's dedicated bypass path.
         """
         if has_sensory_feedback:
-            logger.info("Sensory feedback present — driving state machine to IDLE")
+            logger.info("Sensory feedback present — skipping TTS state transition")
             try:
-                await self._session_manager.on_agent_response_received()
-                await self._session_manager.on_speaking_complete()
+                await self._session_manager.on_tts_skipped()
             except Exception:
                 pass
 
@@ -419,6 +418,10 @@ class VoiceAdapter(BasePlatformAdapter):
         """
         if self._session_manager.state == "listening":
             logger.info("Multi-turn continuation — starting ASR without wake word")
+            # Drain stale audio (TTS echo / music playing through speakers)
+            # so ASR doesn't transcribe it as speech.
+            if self._audio_capture:
+                self._audio_capture.drain_queue()
             await self._start_asr(pre_audio=b"")
 
     def _pause_music(self) -> None:

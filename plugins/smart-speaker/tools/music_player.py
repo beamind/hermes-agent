@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -149,6 +150,7 @@ class MusicPlayer:
                     logger.debug("MusicPlayer playing URL: %s", path)
                     self._player.play(path)
                     self._player.pause = False
+                    self._wait_for_playback(timeout=5.0)
                     return True
 
                 if path and Path(path).exists():
@@ -156,11 +158,25 @@ class MusicPlayer:
                     logger.debug("MusicPlayer playing: %s", path)
                     self._player.play(path)
                     self._player.pause = False
+                    self._wait_for_playback(timeout=2.0)
                     return True
                 logger.warning("Could not resolve %s, trying next", song)
                 index += 1
             self._playlist_index = -1
             return False
+
+    def _wait_for_playback(self, timeout: float = 2.0) -> None:
+        """Poll mpv until playback starts or *timeout* elapses.
+
+        mpv loads files asynchronously — :meth:`play` returns immediately
+        but ``core_idle`` stays True until the demuxer opens the file.
+        Without this wait a subsequent :meth:`get_status` would report
+        ``playing=False`` and ``duration=0``, misleading callers into
+        thinking playback failed.
+        """
+        deadline = time.time() + timeout
+        while self._player.core_idle and time.time() < deadline:
+            time.sleep(0.05)
 
     def next(self) -> bool:
         with self._lock:
