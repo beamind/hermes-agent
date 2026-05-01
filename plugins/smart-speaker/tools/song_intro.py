@@ -57,8 +57,8 @@ def _load_intro_config() -> dict:
             _intro_config_cache = {
                 "enabled": bool(ss.get("music_intro_enabled", True)),
                 "temperature": float(ss.get("music_intro_temperature", 0.9)),
-                "max_chars": int(ss.get("music_intro_max_chars", 150)),
-                "timeout": float(ss.get("music_intro_timeout", 15)),
+                "max_chars": int(ss.get("music_intro_max_chars", 50)),
+                "timeout": float(ss.get("music_intro_timeout", 30)),
             }
         except Exception:
             logger.exception("Failed to load intro config, using defaults")
@@ -120,11 +120,9 @@ def _generate_intro_text(title: str, artist: str) -> str | None:
         {
             "role": "system",
             "content": (
-                "你是一个音乐解说员。用中文写2-3句关于这首歌曲的介绍（80-150字）。"
-                "每次介绍应该从不同角度切入：有时侧重歌词内涵，有时侧重歌手背景，"
-                "有时侧重情感氛围，有时侧重音乐风格。"
-                "根据当前时间和季节调整表达方式。不要评价歌曲好坏，"
-                "而是让听众对即将听到的音乐产生期待。"
+                "你是一个音乐解说员。用中文写1-2句简短介绍（50字以内）。"
+                "从不同角度切入：歌词、创作背景、情感氛围或音乐风格。"
+                "根据当前时间和季节调整表达。不要评价歌曲好坏，让听众产生期待。"
                 "只需输出介绍文字，不要任何额外说明。"
             ),
         },
@@ -208,7 +206,7 @@ def _build_intro_prompt(title: str, artist: str) -> str:
         parts.append(f"歌手：{artist}")
     parts.append(f"当前时间：{time_of_day}，{season}{weekday}（{day_type}）")
     parts.append(f"介绍角度：{angle_hint}")
-    parts.append("要求：2-3句，80-150字，仅输出介绍文字。")
+    parts.append("要求：1-2句，50字以内，仅输出介绍文字。")
 
     return "\n".join(parts)
 
@@ -391,6 +389,7 @@ def _play_audio_file_sync(file_path: str) -> bool:
             try:
                 sd.play(audio_np, samplerate=sample_rate)
                 sd.wait()
+                logger.info("Song intro playback completed")
                 return True
             except Exception as e:
                 if attempt == 0 and "Device unavailable" in str(e):

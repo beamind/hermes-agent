@@ -400,7 +400,14 @@ class GatewayConfig:
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
             except ValueError:
                 pass
-        
+
+        # Voice sessions auto-reset after 1 hour idle to avoid stale context
+        if Platform.VOICE not in reset_by_platform:
+            reset_by_platform[Platform.VOICE] = SessionResetPolicy(
+                mode="idle",
+                idle_minutes=60,
+            )
+
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:
             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])

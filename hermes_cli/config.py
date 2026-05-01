@@ -532,8 +532,8 @@ DEFAULT_CONFIG = {
         "music_library_path": "",       # set by user: path to music files
         "music_intro_enabled": True,    # spoken intro before each song
         "music_intro_temperature": 0.9,  # LLM temperature for intro variety
-        "music_intro_max_chars": 150,   # max intro length in characters
-        "music_intro_timeout": 15,      # LLM call timeout in seconds
+        "music_intro_max_chars": 50,    # max intro length in characters
+        "music_intro_timeout": 30,      # LLM call timeout in seconds
     },
 
     # AWS Bedrock provider configuration.
