@@ -58,6 +58,7 @@ class VoiceSessionManager:
         self._continuation_timer: asyncio.Task | None = None
         self._listen_task: asyncio.Task | None = None
         self._stopped = False
+        self._interrupted_from_sensory = False
 
     @property
     def state(self) -> str:
@@ -81,6 +82,7 @@ class VoiceSessionManager:
                 # Interrupted during playback: pause sensory feedback, start listening
                 self._state = _State.LISTENING
                 self._continuation_count = 0
+                self._interrupted_from_sensory = True
                 logger.info("Wake word during playback → pausing music, starting ASR")
                 if self._on_pause_sensory:
                     try:
@@ -91,6 +93,7 @@ class VoiceSessionManager:
             elif self._state == _State.IDLE:
                 self._state = _State.LISTENING
                 self._continuation_count = 0
+                self._interrupted_from_sensory = False
                 logger.info("Wake word triggered → LISTENING")
 
             else:
@@ -123,9 +126,17 @@ class VoiceSessionManager:
             logger.debug("Listening cancelled")
             async with self._state_lock:
                 if self._state == _State.LISTENING:
-                    # 如果是打断后的聆听，回到 SENSORY_ACTIVE 恢复播放
-                    # 否则回到 IDLE
-                    pass  # 状态由调用方控制
+                    if self._interrupted_from_sensory:
+                        self._state = _State.SENSORY_ACTIVE
+                        self._interrupted_from_sensory = False
+                        logger.info("ASR cancelled during interrupt → resuming playback")
+                        if self._on_resume_sensory:
+                            try:
+                                self._on_resume_sensory()
+                            except Exception:
+                                logger.exception("on_resume_sensory failed")
+                    else:
+                        self._state = _State.IDLE
             raise
         except Exception:
             logger.exception("ASR failed")
@@ -137,6 +148,7 @@ class VoiceSessionManager:
             logger.info("ASR returned empty text → back to IDLE")
             async with self._state_lock:
                 self._state = _State.IDLE
+                self._interrupted_from_sensory = False
             return
 
         async with self._state_lock:
@@ -145,6 +157,7 @@ class VoiceSessionManager:
             if self._state != _State.LISTENING:
                 return
             self._state = _State.PROCESSING
+            self._interrupted_from_sensory = False
             logger.info("ASR result: %r → PROCESSING", text)
 
         try:
@@ -191,6 +204,7 @@ class VoiceSessionManager:
                 return
             self._state = _State.IDLE
             self._continuation_count = 0
+            self._interrupted_from_sensory = False
             logger.info("Sensory finished → IDLE, waiting for wake word")
 
     async def on_tool_executed(self, action: str) -> None:
@@ -293,6 +307,7 @@ class VoiceSessionManager:
             old_state = self._state
             self._state = _State.IDLE
             self._continuation_count = 0
+            self._interrupted_from_sensory = False
         if old_state == _State.LISTENING and self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
         if self._continuation_timer and not self._continuation_timer.done():

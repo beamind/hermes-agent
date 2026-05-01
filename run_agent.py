@@ -2802,8 +2802,11 @@ class AIAgent:
                 if isinstance(_parsed, dict):
                     if _parsed.get("sensory_feedback"):
                         self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
-                    # Collect the last tool action for voice state machine
-                    if _parsed.get("action"):
+                    # Collect the last successful tool action for voice state machine.
+                    # Skip actions from failed tools (e.g. next/previous that
+                    # couldn't advance the playlist) — they shouldn't trigger
+                    # state transitions.
+                    if _parsed.get("action") and _parsed.get("success", True):
                         self._current_turn_tool_action = _parsed["action"]
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass

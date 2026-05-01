@@ -32,17 +32,31 @@ def _get_player() -> MusicPlayer:
     return _player
 
 
+_cached_library_path: str | None = None
+_cached_library_path_loaded: bool = False
+
+
 def _get_library_path() -> str | None:
     """Read music library path from config.yaml, falling back to env var."""
+    global _cached_library_path, _cached_library_path_loaded
+    if _cached_library_path_loaded:
+        return _cached_library_path
+
+    path = None
     try:
         from hermes_cli.config import load_config
         config = load_config()
         path = config.get("smart_speaker", {}).get("music_library_path")
         if path:
-            return str(path)
+            path = str(path)
     except Exception:
         pass
-    return os.getenv("SMART_SPEAKER_MUSIC_LIBRARY_PATH")
+    if not path:
+        path = os.getenv("SMART_SPEAKER_MUSIC_LIBRARY_PATH")
+
+    _cached_library_path = path
+    _cached_library_path_loaded = True
+    return path
 
 
 def _check_music_available() -> bool:
@@ -224,26 +238,29 @@ def _handle_control_playback(args: dict, **kw) -> str:
             "success": True,
             "action": "stop",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio",
         })
 
     if action == "next":
         success = player.next()
-        return tool_result({
+        result = {
             "success": success,
-            "action": "next",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio" if success else None,
-        })
+        }
+        if success:
+            result["action"] = "next"
+            result["sensory_feedback"] = "audio"
+        return tool_result(result)
 
     if action == "previous":
         success = player.previous()
-        return tool_result({
+        result = {
             "success": success,
-            "action": "previous",
             "status": _status_to_dict(player.get_status()),
-            "sensory_feedback": "audio" if success else None,
-        })
+        }
+        if success:
+            result["action"] = "previous"
+            result["sensory_feedback"] = "audio"
+        return tool_result(result)
 
     if action == "volume_set":
         volume = args.get("volume")

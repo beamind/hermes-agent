@@ -71,6 +71,7 @@ class VoiceAdapter(BasePlatformAdapter):
         self._session_manager: Any = None
         self._wake_task: asyncio.Task | None = None
         self._connected = False
+        self._get_music_player: Any = None  # cached _get_player ref
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -194,6 +195,7 @@ class VoiceAdapter(BasePlatformAdapter):
             # Wire track-end callback so session manager returns to IDLE
             # when a track finishes naturally.
             from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+            self._get_music_player = _get_player  # cache for _pause_music / _resume_music
             _get_player().set_on_track_end(self._on_music_finished)
         except Exception:
             pass
@@ -428,8 +430,18 @@ class VoiceAdapter(BasePlatformAdapter):
                 pass
 
     def _on_music_finished(self) -> None:
-        """Callback from MusicPlayer when track ends naturally."""
-        asyncio.create_task(self._session_manager.on_sensory_finished())
+        """Callback from MusicPlayer when track ends naturally.
+
+        Called from mpv's internal thread — must use run_coroutine_threadsafe
+        because asyncio.create_task is not thread-safe.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(
+                self._session_manager.on_sensory_finished(), loop
+            )
+        except Exception:
+            pass
         logger.info("Music finished → back to IDLE")
 
     async def _on_speaking_complete(self) -> None:
@@ -449,7 +461,10 @@ class VoiceAdapter(BasePlatformAdapter):
     def _pause_music(self) -> None:
         """Pause the smart-speaker music player if it is running."""
         try:
-            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+            _get_player = self._get_music_player
+            if _get_player is None:
+                from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+                self._get_music_player = _get_player
 
             player = _get_player()
             # Ensure track-end callback is wired (in case warmup failed)
@@ -465,7 +480,10 @@ class VoiceAdapter(BasePlatformAdapter):
     def _resume_music(self) -> None:
         """Resume the smart-speaker music player after a voice interrupt."""
         try:
-            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+            _get_player = self._get_music_player
+            if _get_player is None:
+                from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+                self._get_music_player = _get_player
 
             player = _get_player()
             status = player.get_status()
