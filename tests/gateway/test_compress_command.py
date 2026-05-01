@@ -64,11 +64,13 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 
-    def _estimate(messages):
+    def _estimate(messages, **_kwargs):
         assert messages == history
         return 100
 
@@ -76,13 +78,13 @@ async def test_compress_command_reports_noop_without_success_banner():
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
 
     assert "No changes from compression" in result
     assert "Compressed:" not in result
-    assert "Rough transcript estimate: ~100 tokens (unchanged)" in result
+    assert "Approx request size: ~100 tokens (unchanged)" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -99,11 +101,13 @@ async def test_compress_command_explains_when_token_estimate_rises():
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
-    def _estimate(messages):
+    def _estimate(messages, **_kwargs):
         if messages == history:
             return 100
         if messages == compressed:
@@ -114,12 +118,12 @@ async def test_compress_command_explains_when_token_estimate_rises():
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
     ):
         result = await runner._handle_compress_command(_make_event())
 
     assert "Compressed: 4 → 3 messages" in result
-    assert "Rough transcript estimate: ~100 → ~120 tokens" in result
+    assert "Approx request size: ~100 → ~120 tokens" in result
     assert "denser summaries" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()

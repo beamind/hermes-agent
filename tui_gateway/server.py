@@ -805,13 +805,17 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 def _compress_session_history(
     session: dict, focus_topic: str | None = None
 ) -> tuple[int, dict]:
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
     history = list(session.get("history", []))
     if len(history) < 4:
         return 0, _get_usage(agent)
-    approx_tokens = estimate_messages_tokens_rough(history)
+    _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+    _tools = getattr(agent, "tools", None) or None
+    approx_tokens = estimate_request_tokens_rough(
+        history, system_prompt=_sys_prompt, tools=_tools
+    )
     compressed, _ = agent._compress_context(
         history,
         getattr(agent, "_cached_system_prompt", "") or "",
@@ -1548,9 +1552,8 @@ def _(rid, params: dict) -> dict:
             finally:
                 _clear_session_context(tokens)
 
-            db = _get_db()
-            if db is not None:
-                db.create_session(key, source="tui", model=_resolve_model())
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
             session["agent"] = agent
 
             try:
@@ -2320,6 +2323,17 @@ def _(rid, params: dict) -> dict:
             if rendered:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
+
+            # Apply pending_title now that the DB row exists.
+            _pending = session.get("pending_title")
+            if _pending and status == "complete":
+                _pdb = _get_db()
+                if _pdb:
+                    try:
+                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
+                            session["pending_title"] = None
+                    except Exception:
+                        pass  # Best effort — auto-title will handle it below
 
             # CLI parity: when voice-mode TTS is on, speak the agent reply
             # (cli.py:_voice_speak_response).  Only the final text — tool
