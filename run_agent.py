@@ -1121,6 +1121,7 @@ class AIAgent:
         # tools during execution so the gateway can suppress redundant TTS.
         # Populated in real-time during tool execution, cleared at turn start.
         self._current_turn_sensory_feedback: set[str] = set()
+        self._current_turn_tool_action: str = None  # Last tool action (e.g. "play", "pause")
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -2784,19 +2785,26 @@ class AIAgent:
         return bool(cleaned.strip())
 
     def _collect_sensory_feedback(self, function_result: str) -> None:
-        """Extract sensory_feedback from a tool result JSON string.
+        """Extract sensory_feedback and tool_action from a tool result JSON string.
 
         Tools that produce their own sensory output (e.g. play_music plays
         audio directly) declare a ``sensory_feedback`` field in their JSON
         result.  This helper parses that field and accumulates it into
         ``_current_turn_sensory_feedback`` so the gateway can suppress
         redundant TTS.
+
+        Also extracts ``tool_action`` (e.g. "play", "pause", "next") for
+        voice session state machine decisions.
         """
         try:
             if isinstance(function_result, str):
                 _parsed = json.loads(function_result)
-                if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
-                    self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
+                if isinstance(_parsed, dict):
+                    if _parsed.get("sensory_feedback"):
+                        self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
+                    # Collect the last tool action for voice state machine
+                    if _parsed.get("action"):
+                        self._current_turn_tool_action = _parsed["action"]
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass
 
@@ -9265,6 +9273,7 @@ class AIAgent:
         # Clear sensory feedback tracking for this turn.
         # Tools will populate this during execution via their result dicts.
         self._current_turn_sensory_feedback.clear()
+        self._current_turn_tool_action = None
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
         self._incomplete_scratchpad_retries = 0
@@ -12543,6 +12552,7 @@ class AIAgent:
             "presentation": {
                 "voice_reply": _should_voice_reply,
                 "sensory_feedback_types": _sensory_feedback_types,
+                "tool_action": self._current_turn_tool_action,
             },
         }
         # If a /steer landed after the final assistant turn (no more tool

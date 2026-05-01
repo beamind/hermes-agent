@@ -4836,6 +4836,7 @@ class GatewayRunner:
             # voice_reply=False on the event so the base adapter skips
             # auto-TTS and on_response_delivered() drives the state machine.
             _has_audio_feedback = _presentation.get("sensory_feedback_types") and "audio" in _presentation.get("sensory_feedback_types")
+            _tool_action = _presentation.get("tool_action")
             if _presentation.get("voice_reply") is False or _has_audio_feedback:
                 event.voice_reply = False
                 # Notify adapter through unified interface
@@ -4846,6 +4847,7 @@ class GatewayRunner:
                             response=response,
                             has_sensory_feedback=_has_audio_feedback,
                             sensory_feedback_types=_presentation.get("sensory_feedback_types", []),
+                            tool_action=_tool_action,
                         )
                     except Exception:
                         pass

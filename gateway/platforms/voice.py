@@ -126,6 +126,8 @@ class VoiceAdapter(BasePlatformAdapter):
             on_wake=self._on_wake,
             on_listen_complete=self._on_listen_complete,
             on_speaking_complete=self._on_speaking_complete,
+            on_pause_sensory=self._pause_music,
+            on_resume_sensory=self._resume_music,
             continuation_timeout=float(self._voice_cfg.get("session", {}).get("continuation_timeout", 30)),
             max_continuation_rounds=int(self._voice_cfg.get("session", {}).get("max_continuation_rounds", 3)),
         )
@@ -189,6 +191,10 @@ class VoiceAdapter(BasePlatformAdapter):
         # Must run in the main thread — mpv is not thread-safe.
         try:
             self._warm_music_player()
+            # Wire track-end callback so session manager returns to IDLE
+            # when a track finishes naturally.
+            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+            _get_player().set_on_track_end(self._on_music_finished)
         except Exception:
             pass
 
@@ -332,7 +338,7 @@ class VoiceAdapter(BasePlatformAdapter):
                 if (
                     self._wake_detector
                     and not self._wake_detector.is_running
-                    and self._session_manager.is_idle
+                    and (self._session_manager.is_idle or self._session_manager.is_sensory_active)
                 ):
                     logger.debug("Restarting wake-word detector")
                     # Discard stale audio from previous turn so the detector
@@ -396,19 +402,35 @@ class VoiceAdapter(BasePlatformAdapter):
         response: str,
         has_sensory_feedback: bool = False,
         sensory_feedback_types: list[str] = None,
+        tool_action: str = None,
     ) -> None:
         """VoiceAdapter: drive state machine when response is delivered.
 
         When sensory feedback is present (e.g. play_music already playing
         audio), TTS is skipped so play_tts() never drives the state machine.
-        We delegate to the session manager's dedicated bypass path.
+        We enter SENSORY_ACTIVE state where only wake-word detection runs.
+
+        Tool actions arrive both on the initial sensory entry (play_music
+        from IDLE) and on interrupt commands (next/pause from SENSORY_ACTIVE).
+        ``on_tool_executed`` handles both cases based on the current state.
         """
-        if has_sensory_feedback:
-            logger.info("Sensory feedback present — skipping TTS state transition")
+        if tool_action:
+            logger.info("Tool action: %s", tool_action)
+            try:
+                await self._session_manager.on_tool_executed(tool_action)
+            except Exception:
+                pass
+        elif has_sensory_feedback:
+            logger.info("Sensory feedback present (no tool action) → entering SENSORY_ACTIVE")
             try:
                 await self._session_manager.on_tts_skipped()
             except Exception:
                 pass
+
+    def _on_music_finished(self) -> None:
+        """Callback from MusicPlayer when track ends naturally."""
+        asyncio.create_task(self._session_manager.on_sensory_finished())
+        logger.info("Music finished → back to IDLE")
 
     async def _on_speaking_complete(self) -> None:
         """Callback: TTS finished.
@@ -430,12 +452,27 @@ class VoiceAdapter(BasePlatformAdapter):
             from hermes_plugins.smart_speaker.tools.music_tools import _get_player
 
             player = _get_player()
+            # Ensure track-end callback is wired (in case warmup failed)
+            player.set_on_track_end(self._on_music_finished)
             status = player.get_status()
             if status.playing and not status.paused:
                 player.pause()
-                logger.debug("Music paused for voice interaction")
+                logger.info("Music paused for voice interrupt")
         except Exception:
             # Music player may not be installed or initialized — ignore
+            pass
+
+    def _resume_music(self) -> None:
+        """Resume the smart-speaker music player after a voice interrupt."""
+        try:
+            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+
+            player = _get_player()
+            status = player.get_status()
+            if status.paused:
+                player.resume()
+                logger.info("Music resumed after voice interrupt")
+        except Exception:
             pass
 
     @staticmethod

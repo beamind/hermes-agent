@@ -1263,6 +1263,7 @@ class BasePlatformAdapter(ABC):
         response: str,
         has_sensory_feedback: bool = False,
         sensory_feedback_types: list[str] = None,
+        tool_action: str = None,
     ) -> None:
         """Notify the adapter that an agent response has been delivered.
 
@@ -1277,6 +1278,8 @@ class BasePlatformAdapter(ABC):
                 (e.g. audio from play_music) that makes TTS redundant.
             sensory_feedback_types: List of feedback types produced
                 (e.g. ["audio"], ["visual"], or []).
+            tool_action: The action performed by the tool (e.g. "play",
+                "pause", "next", "volume_set") for state machine decisions.
         """
         pass
     

@@ -13,6 +13,7 @@ class _State(Enum):
     LISTENING = auto()
     PROCESSING = auto()
     SPEAKING = auto()
+    SENSORY_ACTIVE = auto()  # sensory feedback playing (music/sound), wake-word only
 
 
 class VoiceSessionManager:
@@ -20,10 +21,17 @@ class VoiceSessionManager:
 
     State machine:
         IDLE ──wake──▶ LISTENING ──asr_done──▶ PROCESSING ──response──▶ SPEAKING ──tts_done──▶ (IDLE | LISTENING)
+                                                          └─sensory_feedback──▶ SENSORY_ACTIVE ──wake──▶ LISTENING
+                                                                                          └─end──▶ IDLE
 
     Supports multi-turn continuation: after SPEAKING, if the user speaks
     within ``continuation_timeout`` seconds, we skip the wake word and
     go directly back to LISTENING.
+
+    When sensory feedback is active (e.g. music playing), ASR is stopped
+    and only wake-word detection runs.  Hitting the wake word pauses
+    playback so the user can issue a voice command without background
+    audio interfering with ASR.
     """
 
     def __init__(
@@ -31,12 +39,16 @@ class VoiceSessionManager:
         on_wake: Callable[[bytes], Awaitable[None]],
         on_listen_complete: Callable[[str], Awaitable[None]],
         on_speaking_complete: Callable[[], Awaitable[None]] | None = None,
+        on_pause_sensory: Callable[[], None] | None = None,
+        on_resume_sensory: Callable[[], None] | None = None,
         continuation_timeout: float = 30.0,
         max_continuation_rounds: int = 3,
     ) -> None:
         self._on_wake = on_wake
         self._on_listen_complete = on_listen_complete
         self._on_speaking_complete = on_speaking_complete
+        self._on_pause_sensory = on_pause_sensory
+        self._on_resume_sensory = on_resume_sensory
         self._continuation_timeout = continuation_timeout
         self._max_continuation_rounds = max_continuation_rounds
 
@@ -55,18 +67,35 @@ class VoiceSessionManager:
     def is_idle(self) -> bool:
         return self._state == _State.IDLE
 
+    @property
+    def is_sensory_active(self) -> bool:
+        return self._state == _State.SENSORY_ACTIVE
+
     async def handle_wake(self, pre_audio: bytes) -> None:
         """Called by WakeWordDetector when wake word is detected."""
         async with self._state_lock:
             if self._stopped:
                 return
-            if self._state != _State.IDLE:
+
+            if self._state == _State.SENSORY_ACTIVE:
+                # Interrupted during playback: pause sensory feedback, start listening
+                self._state = _State.LISTENING
+                self._continuation_count = 0
+                logger.info("Wake word during playback → pausing music, starting ASR")
+                if self._on_pause_sensory:
+                    try:
+                        self._on_pause_sensory()
+                    except Exception:
+                        logger.exception("on_pause_sensory failed")
+
+            elif self._state == _State.IDLE:
+                self._state = _State.LISTENING
+                self._continuation_count = 0
+                logger.info("Wake word triggered → LISTENING")
+
+            else:
                 logger.debug("Wake word ignored: state=%s", self._state.name)
                 return
-
-            self._state = _State.LISTENING
-            self._continuation_count = 0
-            logger.info("Wake word triggered → LISTENING")
 
         # Cancel any pending continuation timer
         if self._continuation_timer and not self._continuation_timer.done():
@@ -94,7 +123,9 @@ class VoiceSessionManager:
             logger.debug("Listening cancelled")
             async with self._state_lock:
                 if self._state == _State.LISTENING:
-                    self._state = _State.IDLE
+                    # 如果是打断后的聆听，回到 SENSORY_ACTIVE 恢复播放
+                    # 否则回到 IDLE
+                    pass  # 状态由调用方控制
             raise
         except Exception:
             logger.exception("ASR failed")
@@ -137,10 +168,9 @@ class VoiceSessionManager:
         """Called when the response is delivered without TTS playback.
 
         Sensory-feedback tools (e.g. play_music) produce their own audio,
-        so TTS is suppressed.  This method skips the intermediate SPEAKING
-        state and transitions directly to IDLE (or LISTENING for multi-turn
-        continuation), keeping all state machine logic inside the manager
-        instead of leaking into the adapter.
+        so TTS is suppressed.  We enter SENSORY_ACTIVE state where ASR is
+        stopped and only wake-word detection runs.  The wake word can pause
+        playback and restart ASR for voice commands.
         """
         async with self._state_lock:
             if self._stopped:
@@ -148,40 +178,51 @@ class VoiceSessionManager:
             if self._state != _State.PROCESSING:
                 return
 
-            if self._continuation_count < self._max_continuation_rounds:
-                self._state = _State.LISTENING
-                self._continuation_count += 1
-                logger.info(
-                    "TTS skipped → LISTENING (continuation %d/%d, timeout=%.1fs)",
-                    self._continuation_count,
-                    self._max_continuation_rounds,
-                    self._continuation_timeout,
-                )
-            else:
-                self._state = _State.IDLE
-                self._continuation_count = 0
-                logger.info("TTS skipped → IDLE (max continuations reached)")
+            self._state = _State.SENSORY_ACTIVE
+            self._continuation_count = 0
+            logger.info("Sensory feedback active → SENSORY_ACTIVE, ASR stopped")
+
+    async def on_sensory_finished(self) -> None:
+        """Called when sensory feedback (music/sound) finishes naturally."""
+        async with self._state_lock:
+            if self._stopped:
+                return
+            if self._state != _State.SENSORY_ACTIVE:
+                return
+            self._state = _State.IDLE
+            self._continuation_count = 0
+            logger.info("Sensory finished → IDLE, waiting for wake word")
+
+    async def on_tool_executed(self, action: str) -> None:
+        """Called after a tool executes when the agent was in PROCESSING state.
+
+        Handles both the initial sensory entry (play_music from IDLE path)
+        and interrupt commands (next/pause/etc. from SENSORY_ACTIVE path).
+        """
+        async with self._state_lock:
+            if self._stopped:
+                return
+            if self._state != _State.PROCESSING:
+                logger.warning("on_tool_executed called in wrong state: %s", self._state.name)
                 return
 
-        # Start continuation timer (same logic as on_speaking_complete)
-        if self._continuation_timer and not self._continuation_timer.done():
-            self._continuation_timer.cancel()
-
-        async def _timeout() -> None:
-            await asyncio.sleep(self._continuation_timeout)
-            async with self._state_lock:
-                if self._state == _State.LISTENING:
-                    logger.info("Continuation timeout → IDLE")
-                    self._state = _State.IDLE
-                    self._continuation_count = 0
-
-        self._continuation_timer = asyncio.create_task(_timeout())
-
-        if self._on_speaking_complete:
-            try:
-                await self._on_speaking_complete()
-            except Exception:
-                logger.exception("on_speaking_complete hook failed")
+            if action in {"play", "resume", "next", "previous"}:
+                self._state = _State.SENSORY_ACTIVE
+                self._continuation_count = 0
+                logger.info("Tool %s → SENSORY_ACTIVE", action)
+            elif action in {"pause", "stop"}:
+                self._state = _State.IDLE
+                self._continuation_count = 0
+                logger.info("Tool %s → IDLE", action)
+            else:
+                self._state = _State.SENSORY_ACTIVE
+                self._continuation_count = 0
+                if self._on_resume_sensory:
+                    try:
+                        self._on_resume_sensory()
+                    except Exception:
+                        logger.exception("on_resume_sensory failed")
+                logger.info("Tool %s → SENSORY_ACTIVE", action)
 
     async def on_speaking_complete(self) -> None:
         """Called when TTS playback finishes."""
