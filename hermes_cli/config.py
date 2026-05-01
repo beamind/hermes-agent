@@ -750,6 +750,7 @@ DEFAULT_CONFIG = {
                 "model": "qwen3-asr-flash-realtime",
                 "sample_rate": 16000,
                 "language_hints": ["zh", "en"],
+                "vad_grace_seconds": 0.8,
             },
         },
         "session": {

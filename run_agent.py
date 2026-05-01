@@ -8574,6 +8574,17 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            # ── Sensory feedback extraction ──────────────────────────────
+            # Mirror the sequential path: collect sensory_feedback declared
+            # by tools so the gateway can suppress redundant TTS.
+            try:
+                if isinstance(function_result, str):
+                    _parsed = json.loads(function_result)
+                    if isinstance(_parsed, dict) and _parsed.get("sensory_feedback"):
+                        self._current_turn_sensory_feedback.add(_parsed["sensory_feedback"])
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=name,
@@ -12003,7 +12014,18 @@ class AIAgent:
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
                     self._save_session_log(messages)
-                    
+
+                    # When a tool provides its own audio sensory feedback
+                    # (e.g. play_music already playing audio), skip the
+                    # follow-up LLM call that would generate a redundant
+                    # text confirmation — that text would be suppressed by
+                    # TTS anyway, so the additional API round-trip is pure
+                    # latency.
+                    if "audio" in self._current_turn_sensory_feedback:
+                        final_response = assistant_message.content or ""
+                        final_response = self._strip_think_blocks(final_response).strip()
+                        break
+
                     # Continue loop for next response
                     continue
                 

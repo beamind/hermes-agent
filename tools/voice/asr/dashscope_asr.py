@@ -106,6 +106,7 @@ class DashScopeASR(BaseASR):
         model: str = "qwen3-asr-flash-realtime",
         sample_rate: int = 16000,
         audio_format: str = "pcm",
+        vad_grace_seconds: float = 0.8,
     ) -> None:
         if not _DASHSCOPE_AVAILABLE:
             raise RuntimeError(
@@ -119,6 +120,7 @@ class DashScopeASR(BaseASR):
         self.model = model
         self.sample_rate = sample_rate
         self.audio_format = audio_format
+        self._vad_grace_seconds = vad_grace_seconds
 
     def _create_conversation(self, callback: _ASRCallback) -> OmniRealtimeConversation:
         return OmniRealtimeConversation(
@@ -217,7 +219,7 @@ class DashScopeASR(BaseASR):
                 # brief pauses (e.g. the gap between wake-word and command)
                 # without prematurely truncating the utterance.
                 if callback.speech_stopped.is_set():
-                    _grace_deadline = time.time() + 1.5
+                    _grace_deadline = time.time() + self._vad_grace_seconds
                     while time.time() < _grace_deadline:
                         if callback.sentence_done.is_set():
                             break

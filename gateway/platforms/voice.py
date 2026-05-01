@@ -113,6 +113,7 @@ class VoiceAdapter(BasePlatformAdapter):
                 api_key=api_key,
                 model=self._voice_cfg.get("asr", {}).get("dashscope", {}).get("model", "qwen3-asr-flash-realtime"),
                 sample_rate=self._voice_cfg.get("asr", {}).get("dashscope", {}).get("sample_rate", 16000),
+                vad_grace_seconds=float(self._voice_cfg.get("asr", {}).get("dashscope", {}).get("vad_grace_seconds", 0.8)),
             )
         else:
             logger.error("Unsupported ASR provider: %s", asr_provider)
@@ -182,6 +183,24 @@ class VoiceAdapter(BasePlatformAdapter):
 
         # Start wake-word loop in background
         self._wake_task = asyncio.create_task(self._wake_loop())
+
+        # Eagerly warm up MusicPlayer so the first _pause_music() or
+        # play_music call doesn't pay mpv.MPV() init on the hot path.
+        # Must run in the main thread — mpv is not thread-safe.
+        try:
+            self._warm_music_player()
+        except Exception:
+            pass
+
+        # Pre-warm the AIAgent in the gateway's agent cache so the first
+        # voice request doesn't pay the ~2.7s AIAgent.__init__ overhead
+        # (provider resolution, client construction, config loading).
+        try:
+            if hasattr(self, "gateway_runner") and self.gateway_runner is not None:
+                self.gateway_runner._warm_voice_agent_cache()
+        except Exception:
+            pass
+
         logger.info("VoiceAdapter connected — listening for wake word")
         return True
 
@@ -405,7 +424,7 @@ class VoiceAdapter(BasePlatformAdapter):
     def _pause_music(self) -> None:
         """Pause the smart-speaker music player if it is running."""
         try:
-            from plugins.smart_speaker.tools.music_tools import _get_player
+            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
 
             player = _get_player()
             status = player.get_status()
@@ -415,6 +434,16 @@ class VoiceAdapter(BasePlatformAdapter):
         except Exception:
             # Music player may not be installed or initialized — ignore
             pass
+
+    @staticmethod
+    def _warm_music_player() -> None:
+        """Pre-initialize MusicPlayer in main thread so it's ready on first use."""
+        try:
+            from hermes_plugins.smart_speaker.tools.music_tools import _get_player
+            _get_player()
+            logger.info("MusicPlayer warmed up")
+        except Exception as e:
+            logger.warning("MusicPlayer warmup failed: %s", e)
 
 
 # ------------------------------------------------------------------

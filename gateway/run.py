@@ -1961,6 +1961,25 @@ class GatewayRunner:
                 "plugin discovery failed at gateway startup", exc_info=True,
             )
 
+        # Preload run_agent module to avoid ~4s lazy-import penalty on
+        # the first voice/messaging request after gateway start.
+        logger.info("Preloading agent runtime...")
+        _preload_start = time.time()
+        try:
+            from run_agent import AIAgent  # noqa: F401
+            logger.info("Agent runtime preloaded (%.1fs)", time.time() - _preload_start)
+        except Exception:
+            logger.warning("Agent runtime preload failed", exc_info=True)
+
+        # Warm the auxiliary client resolution cache so per-request
+        # AIAgent creation doesn't re-run provider auto-detection.
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+            get_text_auxiliary_client(runtime_provider="auto")
+            logger.debug("Auxiliary client cache warmed")
+        except Exception:
+            pass
+
         # Register declarative shell hooks from cli-config.yaml.  Gateway
         # has no TTY, so consent has to come from one of the three opt-in
         # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
@@ -2908,7 +2927,9 @@ class GatewayRunner:
             if not check_voice_requirements():
                 logger.warning("Voice: sounddevice or sherpa-onnx not installed")
                 return None
-            return VoiceAdapter(config)
+            adapter = VoiceAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         return None
 
@@ -6546,11 +6567,16 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # Voice platform: no artificial delay between tool calls
+            # since play_music returns instantly and audio plays in bg.
+            _plat_tool_delay = 0.0 if platform_key == "voice" else 1.0
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    tool_delay=_plat_tool_delay,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -8891,6 +8917,89 @@ class GatewayRunner:
         except Exception:
             pass
 
+    def _warm_voice_agent_cache(self) -> None:
+        """Pre-create and cache an AIAgent for the local voice session.
+
+        Called from VoiceAdapter.connect() during gateway startup so the
+        first voice request after gateway start gets a cache hit, avoiding
+        the ~2.7s AIAgent.__init__ overhead (provider resolution, client
+        construction, config loading) on the critical path.
+        """
+        try:
+            source = SessionSource(
+                platform=Platform.VOICE,
+                chat_id="local_voice",
+                chat_name="Local Voice",
+                chat_type="dm",
+                user_id="voice_user",
+                user_name="voice_user",
+            )
+            session_key = self._session_key_for_source(source)
+            user_config = _load_gateway_config()
+            platform_key = _platform_config_key(source.platform)
+
+            from hermes_cli.tools_config import _get_platform_tools
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key, user_config=user_config,
+            )
+            turn_route = self._resolve_turn_agent_config("", model, runtime_kwargs)
+
+            # Build the same context_prompt the first real request will see
+            from run_agent import AIAgent  # preloaded at startup, cached in sys.modules
+            context = build_session_context(source, self.config, session_entry=None)
+            context_prompt = build_session_context_prompt(context, redact_pii=False)
+
+            # Mirror _run_agent's combined_ephemeral computation
+            combined_ephemeral = context_prompt or ""
+            if self._ephemeral_system_prompt:
+                combined_ephemeral = (
+                    combined_ephemeral + "\n\n" + self._ephemeral_system_prompt
+                ).strip()
+
+            _sig = self._agent_config_signature(
+                turn_route["model"],
+                turn_route["runtime"],
+                enabled_toolsets,
+                combined_ephemeral,
+            )
+
+            # Voice platform: tool_delay=0 (same as _run_agent)
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=90,
+                tool_delay=0.0,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=enabled_toolsets,
+                ephemeral_system_prompt=combined_ephemeral or None,
+                platform=platform_key,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                gateway_session_key=session_key,
+                session_db=self._session_db,
+                fallback_model=self._fallback_model,
+            )
+
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    _cache[session_key] = (agent, _sig)
+                    self._enforce_agent_cache_cap()
+            logger.info(
+                "Voice agent pre-warmed for session %s (model=%s, tools=%d)",
+                session_key, turn_route["model"], len(enabled_toolsets),
+            )
+        except Exception:
+            logger.warning("Voice agent pre-warm failed (not fatal)", exc_info=True)
+
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
 
@@ -9859,12 +9968,17 @@ class GatewayRunner:
                         agent._api_call_count = 0
                         logger.debug("Reusing cached agent for session %s", session_key)
 
+            # Voice platform: no artificial delay between tool calls since
+            # play_music returns instantly and audio plays in background.
+            _plat_tool_delay = 0.0 if platform_key == "voice" else 1.0
+
             if agent is None:
                 # Config changed or first message — create fresh agent
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    tool_delay=_plat_tool_delay,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
